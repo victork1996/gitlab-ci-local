@@ -45,6 +45,7 @@ Get rid of all those dev specific shell scripts and make files.
     * [CI/CD Inputs](#cicd-inputs)
     * [Includes](#includes)
     * [Artifacts](#artifacts)
+    * [Windows containers](#windows-containers)
     * [Self Hosted Custom Ports](#self-hosted-custom-ports)
 * [Development](#development)
     * [Scripts](#scripts)
@@ -412,6 +413,26 @@ Shell executor jobs copies artifacts to host/cwd directory. Use --shell-isolatio
 handling for shell jobs.
 
 Docker executor copies artifacts to and from .gitlab-ci-local/artifacts
+
+### Windows containers
+
+Jobs can run in Windows containers, as GitLab's `docker-windows` executor runs them. A job uses a Windows container when it has an `image:` and either one of its `tags` contains `windows` (such as `saas-windows-medium-amd64`) or its image is a Windows base image (`mcr.microsoft.com/windows/...`, `servercore`, `nanoserver`, `mcr.microsoft.com/dotnet/framework/...`).
+
+```yaml
+build:
+  image: mcr.microsoft.com/dotnet/framework/sdk:4.8.1
+  tags: [windows]
+  script:
+    - msbuild App.sln /p:Configuration=Release
+  artifacts:
+    paths: [App/bin/Release/]
+```
+
+- Scripts run in Windows PowerShell (`powershell`), which the image must contain. Each command is echoed, and the job stops at the first command that fails, with its exit code.
+- The project is at `C:\builds\<group>\<project>` (`CI_PROJECT_DIR`), and file-type variables are files in `C:\gcl-file-variables`.
+- Artifacts, cache, `needs`, dotenv reports and services work as for Linux jobs. Files are copied with the job's own image (robocopy and PowerShell) instead of the Linux helper image. Service health checks are skipped, because the wait-for-it image is a Linux image.
+- Docker must be running Windows containers (on Docker Desktop: *Switch to Windows containers...*). A Windows job on a Linux engine, or a Linux job on a Windows engine, fails before it starts with a message saying so. Docker Desktop runs one engine at a time, so a pipeline with both kinds of jobs has to be run in two parts.
+- `--privileged`, `--device`, `--ulimit`, `--userns`, `--shm-size`, `--gpus`, `--ca-file`, `--seccomp` and SSH agent injection are Linux-only and are not applied to Windows jobs.
 
 ### Self Hosted Custom Ports
 

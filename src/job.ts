@@ -27,6 +27,10 @@ import {globbySync} from "globby";
 import terminalLink from "terminal-link";
 import * as crypto from "node:crypto";
 import * as path from "node:path";
+import {
+    POWERSHELL, UTF8_BOM, WINDOWS_BUILDS_DIR, WINDOWS_COPY_IN_DIR, WINDOWS_COPY_OUT_DIR, WINDOWS_FILE_VARIABLES_DIR, WINDOWS_SCRIPTS_DIR,
+    containerEngineOs, copyMatchesCommand, engineMismatch, isWindowsContainerJob, powershellJobScript, psQuote, robocopyCommand, windowsProjectDir,
+} from "./windows-container.js";
 
 const GCL_SHELL_PROMPT_PLACEHOLDER = "<gclShellPromptPlaceholder>";
 interface JobOptions {
@@ -182,7 +186,7 @@ export class Job {
         }
 
         const matrixVariables = opt.matrixVariables ?? {};
-        const fileVariables = findEnvMatchedVariables(variablesFromFiles, this.fileVariablesDir);
+        const fileVariables = this.containerFileVariables(findEnvMatchedVariables(variablesFromFiles, this.fileVariablesDir));
         const predefinedVariables = this._predefinedVariables(opt);
         this._variables = {...predefinedVariables, ...this.globalVariables, ...jobVariables, ...matrixVariables, ...fileVariables, ...argvVariables};
 
@@ -240,7 +244,7 @@ export class Job {
             }
             this.environment.url = expandText(this.environment.url, expanded);
         }
-        const envMatchedVariables = findEnvMatchedVariables(variablesFromFiles, this.fileVariablesDir, this.environment);
+        const envMatchedVariables = this.containerFileVariables(findEnvMatchedVariables(variablesFromFiles, this.fileVariablesDir, this.environment));
 
         const userDefinedVariables = {...this.globalVariables, ...jobVariables, ...matrixVariables, ...ruleVariables, ...envMatchedVariables, ...argvVariables};
         this.discourageOverridingOfPredefinedVariables(predefinedVariables, userDefinedVariables, argv.ignorePredefinedVars);
@@ -327,7 +331,10 @@ If you know what you're doing and would like to suppress this warning, use one o
         const gitData = this.gitData;
 
         let ciBuildsDir: string;
-        if (this.jobData["image"]) {
+        if (this.jobData["image"] && this.windowsContainer) {
+            ciBuildsDir = WINDOWS_BUILDS_DIR;
+            this.ciProjectDir = windowsProjectDir(gitData.remote.group, gitData.remote.project);
+        } else if (this.jobData["image"]) {
             ciBuildsDir = "/builds";
             this.ciProjectDir = `${ciBuildsDir}/${gitData.remote.group}/${gitData.remote.project}`;
         } else if (argv.shellIsolation) {
@@ -659,6 +666,25 @@ If you know what you're doing and would like to suppress this warning, use one o
         return `/tmp/gitlab-ci-local-file-variables-${this._variables["CI_PROJECT_PATH_SLUG"]}-${this.jobId}`;
     }
 
+    /** Whether the job runs in a Windows container (see windows-container.ts). */
+    get windowsContainer (): boolean {
+        const image = this.jobData["image"];
+        const name = typeof image === "string" ? image : image?.name;
+        return !this.argv.forceShellExecutor && isWindowsContainerJob(name, this.jobData["tags"]);
+    }
+
+    /** Where file-type variables are inside the job's container. */
+    get containerFileVariablesDir () {
+        return this.windowsContainer ? WINDOWS_FILE_VARIABLES_DIR : this.fileVariablesDir;
+    }
+
+    // File-type variables are written to fileVariablesDir on the host; a Windows container sees them
+    // mounted at WINDOWS_FILE_VARIABLES_DIR, so their values point there instead.
+    private containerFileVariables (variables: {[key: string]: string}) {
+        if (!this.windowsContainer) return variables;
+        return Object.fromEntries(Object.entries(variables).map(([key, value]) => [key, value === `${this.fileVariablesDir}/${key}` ? `${WINDOWS_FILE_VARIABLES_DIR}\\${key}` : value]));
+    }
+
     get globalVariables () {
         if (this.inherit.variables === false) {
             return {};
@@ -700,6 +726,15 @@ If you know what you're doing and would like to suppress this warning, use one o
         }
 
         if (imageName) {
+            // Docker runs either Linux or Windows containers; fail early with the reason, not on a pull error.
+            const mismatch = engineMismatch(this.windowsContainer, await containerEngineOs(this.argv.containerExecutable));
+            if (mismatch) throw new AssertionError({message: chalk`${this.formattedJobName} ${mismatch}`});
+        }
+
+        if (imageName && this.windowsContainer) {
+            await this.pullImage(writeStreams, imageName, imagePlatform);
+            await this.prepareWindowsContainer(writeStreams, imageName);
+        } else if (imageName) {
             await this.pullImage(writeStreams, imageName, imagePlatform);
 
             const buildVolumeName = this.buildVolumeName;
@@ -806,6 +841,89 @@ If you know what you're doing and would like to suppress this warning, use one o
         }
     }
 
+    // Windows containers have no Linux helper image: the job's own image (which has PowerShell, as
+    // GitLab's docker-windows executor requires) moves files between the host and the build volume,
+    // through read-only bind mounts and robocopy, instead of chown/rsync in a helper container.
+    private async prepareWindowsContainer (writeStreams: WriteStreams, imageName: string) {
+        const argv = this.argv;
+        this._windowsImage = imageName;
+        this._containerVolumeNames.push(this.buildVolumeName);
+        await Shell.spawn([argv.containerExecutable, "volume", "create", this.buildVolumeName], argv.cwd);
+        const time = process.hrtime();
+        this.refreshLongRunningSilentTimeout(writeStreams);
+        await this.copyInWindows(path.resolve(argv.cwd, argv.stateDir, "builds", ".docker"));
+        writeStreams.stdout(chalk`${this.formattedJobName} {magentaBright copied to ${argv.containerExecutable} volumes} in {magenta ${prettyHrtime(process.hrtime(time))}}\n`);
+    }
+
+    private _windowsImage: string | null = null;
+
+    /** Copies a host folder's contents into the job's build volume. */
+    private copyInWindows (source: string) {
+        assert(this._windowsImage, "the Windows job image is not known yet");
+        return Shell.spawn([
+            this.argv.containerExecutable, "run", "--rm",
+            "--volume", `${this.buildVolumeName}:${this.ciProjectDir}`,
+            "--volume", `${source}:${WINDOWS_COPY_IN_DIR}:ro`,
+            this._windowsImage, ...POWERSHELL, "-Command", robocopyCommand(WINDOWS_COPY_IN_DIR, this.ciProjectDir),
+        ], this.argv.cwd);
+    }
+
+    /** Runs a PowerShell script with the build volume mounted and a host folder at WINDOWS_COPY_OUT_DIR. */
+    private async copyOutWindows (script: string, type: "artifacts" | "cache", extraArgs: string[] = []) {
+        assert(this._windowsImage, "the Windows job image is not known yet");
+        const cwd = this.argv.cwd;
+        const scriptsDir = path.resolve(cwd, this.argv.stateDir, "scripts");
+        const outDir = path.resolve(cwd, this.argv.stateDir, type);
+        const scriptName = `${this.safeJobName}_${this.jobId}_${type}.ps1`;
+        await fs.mkdirp(outDir);
+        await fs.outputFile(path.join(scriptsDir, scriptName), UTF8_BOM + script, "utf-8");
+        this._filesToRm.push(path.join(scriptsDir, scriptName));
+        await Shell.spawn([
+            this.argv.containerExecutable, "run", "--rm", ...extraArgs,
+            "--volume", `${this.buildVolumeName}:${this.ciProjectDir}`,
+            "--volume", `${scriptsDir}:${WINDOWS_SCRIPTS_DIR}:ro`,
+            "--volume", `${outDir}:${WINDOWS_COPY_OUT_DIR}`,
+            "--workdir", this.ciProjectDir,
+            this._windowsImage, ...POWERSHELL, "-File", `${WINDOWS_SCRIPTS_DIR}\\${scriptName}`,
+        ], cwd);
+    }
+
+    /** Creates the Windows job container; it runs the job's current PowerShell script on each start. */
+    private async createWindowsContainer (expanded: {[key: string]: string}, imageName: string, scriptName: string) {
+        const argv = this.argv;
+        const cwd = argv.cwd;
+        const args = [argv.containerExecutable, "create"];
+        const imageUser = this.imageUser(expanded);
+        if (imageUser) args.push("--user", imageUser);
+        const imagePlatform = this.imagePlatform(expanded);
+        if (imagePlatform) args.push("--platform", imagePlatform);
+        if (argv.containerEmulate) {
+            if (!GitlabRunnerPresetValues.includes(argv.containerEmulate)) throw new Error("Invalid gitlab runner to emulate.");
+            args.push(`--memory=${GitlabRunnerMemoryPresetValue[argv.containerEmulate]}m`, `--cpus=${GitlabRunnerCPUsPresetValue[argv.containerEmulate]}`);
+        }
+        for (const network of argv.network) {
+            if (["host", "none"].includes(network)) args.push("--network", network);
+        }
+        if (this._serviceNetworkId) args.push("--network", this._serviceNetworkId, "--network-alias", "build");
+        args.push("--volume", `${this.buildVolumeName}:${this.ciProjectDir}`);
+        args.push("--volume", `${path.resolve(cwd, argv.stateDir, "scripts")}:${WINDOWS_SCRIPTS_DIR}:ro`);
+        if (await fs.pathExists(this.fileVariablesDir)) {
+            args.push("--volume", `${path.resolve(this.fileVariablesDir)}:${WINDOWS_FILE_VARIABLES_DIR}:ro`);
+        }
+        args.push("--workdir", this.ciProjectDir);
+        for (const volume of argv.volume) args.push("--volume", volume);
+        for (const extraHost of argv.extraHost) args.push(`--add-host=${extraHost}`);
+        for (const [key, val] of Object.entries(expanded)) args.push("-e", `${key}=${val}`);
+        if (this.imageEntrypoint) args.push("--entrypoint", this.imageEntrypoint[0]);
+        args.push(...(await this.mountCacheCmd(this.writeStreams, expanded)));
+        args.push(imageName, ...(this.imageEntrypoint?.slice(1) ?? []), ...POWERSHELL, "-File", `${WINDOWS_SCRIPTS_DIR}\\${scriptName}`);
+        const {stdout: containerId} = await Shell.spawn(args, cwd);
+        const connectableNetworks = argv.network.filter((network) => !["host", "none"].includes(network));
+        await Promise.all(connectableNetworks.map((network) => Shell.spawn([argv.containerExecutable, "network", "connect", network, containerId])));
+        this._containerId = containerId;
+        this._containersToClean.push(containerId);
+    }
+
     private _cleanupPromise: Promise<void> | null = null;
 
     async cleanupResources () {
@@ -896,7 +1014,8 @@ If you know what you're doing and would like to suppress this warning, use one o
                 const path = expandText(p, expanded);
                 writeStreams.stdout(chalk`${this.formattedJobName} {magentaBright mounting cache} for path ${path}\n`);
                 const cacheMount = safeDockerString(`gcl-${expanded.CI_PROJECT_PATH_SLUG}-${uniqueCacheName}`);
-                cmd.push("-v", `${cacheMount}:${this.ciProjectDir}/${path}`);
+                const target = this.windowsContainer ? `${this.ciProjectDir}\\${path.replaceAll("/", "\\")}` : `${this.ciProjectDir}/${path}`;
+                cmd.push("-v", `${cacheMount}:${target}`);
             });
         }
         return cmd;
@@ -964,6 +1083,13 @@ If you know what you're doing and would like to suppress this warning, use one o
         }
 
         this.refreshLongRunningSilentTimeout(writeStreams);
+
+        // A Windows container runs this script file (mounted from the state directory) each time it starts.
+        const windowsScriptName = `${safeJobName}_${this.jobId}.ps1`;
+        const windows = Boolean(imageName && this.windowsContainer);
+        if (imageName && windows && !this._containerId) {
+            await this.createWindowsContainer(expanded, imageName, windowsScriptName);
+        }
 
         if (imageName && !this._containerId) {
             let dockerCmd = `${this.argv.containerExecutable} create --interactive ${this.generateInjectSSHAgentOptions()} `;
@@ -1130,6 +1256,13 @@ If you know what you're doing and would like to suppress this warning, use one o
         await this.copyCacheIn(writeStreams, expanded);
         await this.copyArtifactsIn(writeStreams);
 
+        if (windows) {
+            const windowsScript = powershellJobScript(scripts, {projectDir: this.ciProjectDir, promptPlaceholder: GCL_SHELL_PROMPT_PLACEHOLDER, jobStatus: expanded["CI_JOB_STATUS"]});
+            const windowsScriptFile = `${cwd}/${stateDir}/scripts/${windowsScriptName}`;
+            await fs.outputFile(windowsScriptFile, UTF8_BOM + windowsScript, "utf-8");
+            this._filesToRm.push(windowsScriptFile);
+        }
+
         let cmd = "set -eo pipefail\n";
         cmd += "exec 0< /dev/null\n";
 
@@ -1154,11 +1287,12 @@ If you know what you're doing and would like to suppress this warning, use one o
         await fs.chmod(jobScriptFile, "0755");
         this._filesToRm.push(jobScriptFile);
 
-        if (imageName) {
+        if (imageName && !windows) {
             await Shell.spawn([this.argv.containerExecutable, "cp", `${stateDir}/scripts/${safeJobName}_${this.jobId}`, `${this._containerId}:/gcl-cmd`], cwd);
         }
 
-        const cp = execa(this._containerId ? `${this.argv.containerExecutable} start --attach -i ${this._containerId}` : "bash", {
+        const startCommand = windows ? `${this.argv.containerExecutable} start --attach ${this._containerId}` : `${this.argv.containerExecutable} start --attach -i ${this._containerId}`;
+        const cp = execa(this._containerId ? startCommand : "bash", {
             cwd,
             shell: "bash",
             env: imageName ? process.env : expanded,
@@ -1231,7 +1365,9 @@ If you know what you're doing and would like to suppress this warning, use one o
                 return reject(err);
             });
 
-            if (imageName) {
+            if (windows) {
+                cp.stdin?.end();
+            } else if (imageName) {
                 cp.stdin?.end(". /gcl-cmd");
             } else {
                 cp.stdin?.end(`./${stateDir}/scripts/${safeJobName}_${this.jobId}`);
@@ -1418,6 +1554,9 @@ If you know what you're doing and would like to suppress this warning, use one o
 
     copyIn (source: string) {
         const safeJobName = this.safeJobName;
+        if (this._windowsImage) {
+            return this.copyInWindows(path.resolve(this.argv.cwd, source));
+        }
         if (!this.imageName(this._variables) && this.argv.shellIsolation) {
             const relativeSource = path.relative(this.argv.cwd, source).split(path.sep).join("/");
             return Shell.spawn(["rsync", "-a", `${relativeSource}/.`, `${this.argv.stateDir}/builds/${safeJobName}`], this.argv.cwd);
@@ -1450,7 +1589,12 @@ If you know what you're doing and would like to suppress this warning, use one o
             cmd += `rsync -Ra ${paths} ${safeBashString(cachePath + "/" + cacheName + "/.")} || true\n`;
 
             await Mutex.exclusive(cacheName, async () => {
-                await this.copyOut(cmd, stateDir, "cache", []);
+                if (this._windowsImage) {
+                    const patterns = c.paths.filter((p) => isSubpath(p, this.argv.cwd, this.argv.cwd)).map((p) => expandText(p, expanded));
+                    await this.copyOutWindows(copyMatchesCommand({patterns, destination: `${WINDOWS_COPY_OUT_DIR}\\${cacheName}`, projectDir: this.ciProjectDir, stateDir}), "cache");
+                } else {
+                    await this.copyOut(cmd, stateDir, "cache", []);
+                }
             });
             const endTime = process.hrtime(time);
 
@@ -1539,7 +1683,23 @@ If you know what you're doing and would like to suppress this warning, use one o
 
         time = process.hrtime();
         const dockerCmdExtras = this.argv.mountCache ? await this.mountCacheCmd(writeStreams, expanded) : [];
-        await this.copyOut(cpCmd, stateDir, "artifacts", dockerCmdExtras);
+        if (this._windowsImage) {
+            const destination = `${WINDOWS_COPY_OUT_DIR}\\${safeJobName}`;
+            let script = copyMatchesCommand({
+                patterns: artifactsPaths.map((p) => expandText(p, expanded)),
+                exclude: (this.artifacts.exclude ?? []).map((p) => expandText(p, expanded)),
+                destination, projectDir: this.ciProjectDir, stateDir,
+            }).replace(/exit 0\r\n$/, "");
+            script += `New-Item -ItemType Directory -Force -Path ${psQuote(destination)} | Out-Null\r\n`;
+            for (const dotenvFile of reportDotenvs ?? []) {
+                const target = `${destination}\\.gitlab-ci-reports\\dotenv\\${dotenvFile.replaceAll("/", "\\")}`;
+                script += `if (Test-Path -LiteralPath ${psQuote(dotenvFile)}) { New-Item -ItemType Directory -Force -Path (Split-Path -Parent ${psQuote(target)}) | Out-Null; Copy-Item -LiteralPath ${psQuote(dotenvFile)} -Destination ${psQuote(target)} -Force }\r\n`;
+            }
+            script += "exit 0\r\n";
+            await this.copyOutWindows(script, "artifacts", dockerCmdExtras);
+        } else {
+            await this.copyOut(cpCmd, stateDir, "artifacts", dockerCmdExtras);
+        }
         endTime = process.hrtime(time);
 
         await Promise.all((reportDotenvs ?? []).map(async (reportDotenv) => {
@@ -1683,7 +1843,7 @@ If you know what you're doing and would like to suppress this warning, use one o
             dockerCmd += `--volume ${gclRegistryPrefix}.certs:/etc/docker/certs.d:ro `;
         }
 
-        if (this.argv.caFile) {
+        if (this.argv.caFile && !this.windowsContainer) {
             const caFilePath = path.isAbsolute(this.argv.caFile) ? this.argv.caFile : path.resolve(this.argv.cwd, this.argv.caFile);
             if (await fs.pathExists(caFilePath)) {
                 dockerCmd += `--volume ${caFilePath}:/etc/ssl/certs/ca-certificates.crt:ro `;
@@ -1705,8 +1865,13 @@ If you know what you're doing and would like to suppress this warning, use one o
         if (serviceEntrypoint) {
             dockerCmd += `--entrypoint ${safeBashString(serviceEntrypoint[0])} `;
         }
-        dockerCmd += `--volume ${this.buildVolumeName}:${this.ciProjectDir} `;
-        dockerCmd += `--volume ${this.tmpVolumeName}:${this.fileVariablesDir} `;
+        if (this.windowsContainer) {
+            // Windows paths keep their backslashes only when quoted.
+            dockerCmd += `--volume ${safeBashString(`${this.buildVolumeName}:${this.ciProjectDir}`)} `;
+        } else {
+            dockerCmd += `--volume ${this.buildVolumeName}:${this.ciProjectDir} `;
+            dockerCmd += `--volume ${this.tmpVolumeName}:${this.fileVariablesDir} `;
+        }
 
         // The default podman network mode is not `bridge`, which means a `podman network connect` call will fail
         // when connecting user defined networks. The workaround is to use a user defined network on container
@@ -1754,6 +1919,10 @@ If you know what you're doing and would like to suppress this warning, use one o
         const serviceName = service.name;
         const waitImageName = this.argv.waitImage;
         const waitForServicesTimeout = this.argv.waitForServicesTimeout;
+        if (this.windowsContainer) {
+            // The wait-for-it helper is a Linux image, which a Windows engine cannot run.
+            return writeStreams.stdout(chalk`${this.formattedJobName} {yellow service image: ${serviceName} healthcheck skipped for Windows containers}\n`);
+        }
 
         const {stdout} = await Shell.spawn([this.argv.containerExecutable, "image", "inspect", serviceName]);
         const imageInspect = JSON.parse(stdout);
