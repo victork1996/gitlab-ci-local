@@ -905,8 +905,11 @@ If you know what you're doing and would like to suppress this warning, use one o
             if (["host", "none"].includes(network)) args.push("--network", network);
         }
         if (this._serviceNetworkId) args.push("--network", this._serviceNetworkId, "--network-alias", "build");
+        // Docker only bind-mounts folders that already exist.
+        const scriptsDir = path.resolve(cwd, argv.stateDir, "scripts");
+        await fs.mkdirp(scriptsDir);
         args.push("--volume", `${this.buildVolumeName}:${this.ciProjectDir}`);
-        args.push("--volume", `${path.resolve(cwd, argv.stateDir, "scripts")}:${WINDOWS_SCRIPTS_DIR}:ro`);
+        args.push("--volume", `${scriptsDir}:${WINDOWS_SCRIPTS_DIR}:ro`);
         if (await fs.pathExists(this.fileVariablesDir)) {
             args.push("--volume", `${path.resolve(this.fileVariablesDir)}:${WINDOWS_FILE_VARIABLES_DIR}:ro`);
         }
