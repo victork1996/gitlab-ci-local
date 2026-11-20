@@ -27,6 +27,7 @@ import {globbySync} from "globby";
 import terminalLink from "terminal-link";
 import * as crypto from "node:crypto";
 import * as path from "node:path";
+import * as os from "node:os";
 import {
     POWERSHELL, UTF8_BOM, WINDOWS_BUILDS_DIR, WINDOWS_COPY_IN_DIR, WINDOWS_COPY_OUT_DIR, WINDOWS_FILE_VARIABLES_DIR, WINDOWS_SCRIPTS_DIR,
     containerEngineOs, copyMatchesCommand, engineMismatch, isWindowsContainerJob, powershellJobScript, psQuote, robocopyCommand, windowsProjectDir,
@@ -663,7 +664,14 @@ If you know what you're doing and would like to suppress this warning, use one o
     }
 
     get fileVariablesDir () {
-        return `/tmp/gitlab-ci-local-file-variables-${this._variables["CI_PROJECT_PATH_SLUG"]}-${this.jobId}`;
+        const name = `gitlab-ci-local-file-variables-${this._variables["CI_PROJECT_PATH_SLUG"]}-${this.jobId}`;
+        // On a Windows host, Node resolves /tmp against the current drive while Git Bash maps it to the
+        // user's temp folder, so a shell job could not find its file variables. A C:/... path means the
+        // same folder to both. Container jobs keep /tmp, which is their path inside the container.
+        if (process.platform === "win32" && this.imageName() === null) {
+            return `${os.tmpdir().replaceAll("\\", "/")}/${name}`;
+        }
+        return `/tmp/${name}`;
     }
 
     /** Whether the job runs in a Windows container (see windows-container.ts). */
