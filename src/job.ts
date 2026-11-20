@@ -680,7 +680,7 @@ If you know what you're doing and would like to suppress this warning, use one o
     get windowsContainer (): boolean {
         const image = this.jobData["image"];
         const name = typeof image === "string" ? image : image?.name;
-        return !this.argv.forceShellExecutor && isWindowsContainerJob(name, this.jobData["tags"]);
+        return !this.argv.forceShellExecutor && isWindowsContainerJob(name, this.jobData["tags"], this.argv.imageOs);
     }
 
     /** Where file-type variables are inside the job's container. */

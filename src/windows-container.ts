@@ -21,10 +21,24 @@ export function isWindowsImage (image: string | null | undefined): boolean {
         /(^|\/)dotnet\/framework\//.test(name);
 }
 
-export function isWindowsContainerJob (image: string | null | undefined, tags: unknown): boolean {
+// imageOs holds operating systems read from the images themselves (--image-os image=os, as
+// Pipeline Play passes from the image's manifest); the name check is only a fallback for the rest.
+export function isWindowsContainerJob (image: string | null | undefined, tags: unknown, imageOs: {[image: string]: string} = {}): boolean {
     if (!image) return false;
     const tagged = Array.isArray(tags) && tags.some((tag) => typeof tag === "string" && /windows/i.test(tag));
-    return tagged || isWindowsImage(image);
+    if (tagged) return true;
+    const known = imageOs[image];
+    return known ? known === "windows" : isWindowsImage(image);
+}
+
+/** Parses --image-os values ("image=os"); the image name is everything before the last "=". */
+export function parseImageOs (values: string[]): {[image: string]: string} {
+    const result: {[image: string]: string} = {};
+    for (const value of values) {
+        const at = value.lastIndexOf("=");
+        if (at > 0) result[value.slice(0, at)] = value.slice(at + 1).toLowerCase();
+    }
+    return result;
 }
 
 export function windowsProjectDir (group: string, project: string): string {

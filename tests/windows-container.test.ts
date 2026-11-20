@@ -3,7 +3,7 @@ import fs from "fs-extra";
 import os from "node:os";
 import path from "node:path";
 import {
-    POWERSHELL, UTF8_BOM, copyMatchesCommand, engineMismatch, isWindowsContainerJob, isWindowsImage, powershellJobScript, psQuote, robocopyCommand, windowsProjectDir,
+    POWERSHELL, UTF8_BOM, copyMatchesCommand, engineMismatch, isWindowsContainerJob, isWindowsImage, parseImageOs, powershellJobScript, psQuote, robocopyCommand, windowsProjectDir,
 } from "../src/windows-container.js";
 
 describe("Windows container jobs", () => {
@@ -23,6 +23,15 @@ describe("Windows container jobs", () => {
         "docker.io/ruby:3.1", "node:24-bookworm", "mcr.microsoft.com/dotnet/sdk:8.0", "registry.example.com/windowsfoo:1", "alpine",
     ])("treats %s as a Linux image", (image) => {
         expect(isWindowsImage(image)).toBe(false);
+    });
+
+    test("an image's known OS overrides its name, but not windows tags", () => {
+        const imageOs = parseImageOs(["registry.example.com/team/builder:1=windows", "mcr.microsoft.com/windows/servercore:ltsc2022=linux", "host:5000/app=LINUX"]);
+        expect(imageOs).toEqual({"registry.example.com/team/builder:1": "windows", "mcr.microsoft.com/windows/servercore:ltsc2022": "linux", "host:5000/app": "linux"});
+        expect(isWindowsContainerJob("registry.example.com/team/builder:1", [], imageOs)).toBe(true);
+        expect(isWindowsContainerJob("mcr.microsoft.com/windows/servercore:ltsc2022", [], imageOs)).toBe(false);
+        expect(isWindowsContainerJob("host:5000/app", ["windows"], imageOs)).toBe(true);
+        expect(isWindowsContainerJob("other/image:1", [], imageOs)).toBe(false);
     });
 
     test("tags mentioning windows select a Windows container, but only for jobs with an image", () => {

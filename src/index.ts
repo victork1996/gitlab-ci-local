@@ -298,6 +298,11 @@ process.on("SIGUSR2", async () => {
             description: "Add networks to docker executor",
             requiresArg: false,
         })
+        .option("image-os", {
+            type: "array",
+            description: "Container OS of an image, as image=os (linux or windows), read from the image instead of guessed from its name",
+            requiresArg: false,
+        })
         .option("volume", {
             type: "array",
             description: "Add volumes to docker executor",
