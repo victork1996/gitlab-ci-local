@@ -44,8 +44,24 @@ export function matrixSelectorMatches (producerVars: MatrixVariables | null, mat
 // Find the consumer's `need` (if any) that this `producer` job satisfies.
 // Used by both the executor (waitFor) and the artifacts producer pipeline so
 // the two paths apply the same matching rules.
-export function findMatchingNeed (consumerNeeds: ReadonlyArray<Need> | null, producerName: string, producerBaseName: string): Need | undefined {
-    return consumerNeeds?.find(n => n.job === producerName || n.job === producerBaseName);
+export function findMatchingNeed (consumerNeeds: ReadonlyArray<Need> | null, producer: JobReference): Need | undefined {
+    return consumerNeeds?.find(n => isJobReference(producer, n.job));
+}
+
+type JobReference = {name: string; baseName: string; matrixVariables: MatrixVariables | null};
+
+// The names `needs:` and `dependencies:` may use for a job: its base name, its own name, and the name GitLab gives a
+// parallel variant (`build: [linux, amd64]` for a matrix, `test 2/3` for parallel: 3), which configs copy from GitLab.
+export function jobReferences (job: JobReference): string[] {
+    const names = [job.name, job.baseName];
+    if (job.matrixVariables) names.push(`${job.baseName}: [${Object.values(job.matrixVariables).join(", ")}]`);
+    const numbered = /: \[(\d+)\/(\d+)\]$/.exec(job.name);
+    if (!job.matrixVariables && numbered && job.name !== job.baseName) names.push(`${job.baseName} ${numbered[1]}/${numbered[2]}`);
+    return names;
+}
+
+export function isJobReference (job: JobReference, reference: string): boolean {
+    return jobReferences(job).includes(reference);
 }
 
 // `$[[ matrix.IDENTIFIER ]]` — see https://docs.gitlab.com/ci/yaml/matrix_expressions/.

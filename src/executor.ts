@@ -2,7 +2,7 @@ import chalk from "chalk-template";
 import {Job} from "./job.js";
 import assert from "node:assert";
 import {Argv} from "./argv.js";
-import {matrixSelectorMatches} from "./parallel.js";
+import {isJobReference, matrixSelectorMatches} from "./parallel.js";
 
 export class Executor {
 
@@ -92,7 +92,7 @@ export class Executor {
         const toWaitFor = [];
         assert(job.needs != null, chalk`${job.name}.needs cannot be null in getNeededToWaitFor`);
         for (const need of job.needs) {
-            let baseJobs = jobs.filter(j => j.baseName === need.job);
+            let baseJobs = jobs.filter(j => isJobReference(j, need.job));
             if (need.parallel?.matrix && baseJobs.length > 0) {
                 assert(!baseJobs.every(j => j.matrixVariables == null), chalk`{blueBright ${job.name}} uses needs.parallel.matrix targeting {blueBright ${need.job}}, but {blueBright ${need.job}} has no parallel:matrix configuration`);
                 baseJobs = baseJobs.filter(j => matrixSelectorMatches(j.matrixVariables, need.parallel!.matrix));

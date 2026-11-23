@@ -3,6 +3,7 @@ import {Job, safeDockerString} from "./job.js";
 import {Parser} from "./parser.js";
 import {WriteStreams} from "./write-streams.js";
 import {Executor} from "./executor.js";
+import {jobReferences} from "./parallel.js";
 import fs from "fs-extra";
 import {Argv} from "./argv.js";
 import {AssertionError} from "node:assert";
@@ -290,7 +291,7 @@ export class Commander {
         // This will throw an assertion errror if the dependency chain is broken due to needs keyword on specific events without having to run the full pipeline
         Executor.getStartCandidates(allJobs, stages, activeJobs, activeManualJobNames);
 
-        const activeJobNames = new Set(activeJobs.map(job => job.name));
+        const activeJobNames = new Set(activeJobs.flatMap(job => jobReferences(job)));
         // This willl throw an assertion error if the dependency chain is broken due to dependencies keyword (a job depending on artifacts from a job that will never run) without having to run the full pipeline
         for (const job of activeJobs) {
             if (job.dependencies) {

@@ -1,0 +1,29 @@
+---
+stages: [build, test]
+
+build:
+  stage: build
+  parallel:
+    matrix:
+      - OS: [linux, windows]
+        ARCH: amd64
+  script:
+    - echo build
+
+shard:
+  stage: build
+  parallel: 2
+  script:
+    - echo shard
+
+# GitLab names variants "build: [linux, amd64]" and "shard 2/2"; configs copy those names.
+check:
+  stage: test
+  needs: ["build: [linux, amd64]", "shard 2/2"]
+  dependencies: ["build: [linux, amd64]"]
+  variables:
+    # libyaml, which GitLab uses, accepts quoted scalars continued at the key's indentation.
+    CONDITION: '$CI_COMMIT_BRANCH == "main" &&
+    $CI_PIPELINE_SOURCE == "push"'
+  script:
+    - echo check

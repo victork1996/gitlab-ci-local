@@ -35,6 +35,9 @@
       },
     },
   },
+  "patchedDependencies": {
+    "js-yaml@5.5.0": "patches/js-yaml@5.5.0.patch",
+  },
   "overrides": {
     "chalk": "6.x",
   },

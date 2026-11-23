@@ -1,0 +1,26 @@
+diff --git a/dist/js-yaml.cjs.js b/dist/js-yaml.cjs.js
+index 7fb64c8d6cbdfa279ba45c01b69085cc93e06228..f03f8040d96de87bb3c9be98b409fac3deac016c 100644
+--- a/dist/js-yaml.cjs.js
++++ b/dist/js-yaml.cjs.js
+@@ -2144,7 +2144,7 @@ function readAlias(state, props) {
+ }
+ function readFlowScalarBreak(state, nodeIndent) {
+ 	skipSeparationSpace(state, false);
+-	if (state.lineIndent < nodeIndent) throwError(state, "deficient indentation");
++	// Patched for gitlab-ci-local: like libyaml, which GitLab uses, quoted scalars ignore indentation on continuation lines.
+ }
+ function readSingleQuotedScalar(state, nodeIndent, props) {
+ 	if (state.input.charCodeAt(state.position) !== 39) return false;
+diff --git a/dist/js-yaml.mjs b/dist/js-yaml.mjs
+index 44ec5f1260d6bcbfcca63797153bcf9cfcd51094..3f3c216d84ff00ddeab2d70bbab11338f5733ddf 100644
+--- a/dist/js-yaml.mjs
++++ b/dist/js-yaml.mjs
+@@ -2065,7 +2065,7 @@ function readAlias(state, props) {
+ }
+ function readFlowScalarBreak(state, nodeIndent) {
+ 	skipSeparationSpace(state, false);
+-	if (state.lineIndent < nodeIndent) throwError(state, "deficient indentation");
++	// Patched for gitlab-ci-local: like libyaml, which GitLab uses, quoted scalars ignore indentation on continuation lines.
+ }
+ function readSingleQuotedScalar(state, nodeIndent, props) {
+ 	if (state.input.charCodeAt(state.position) !== 39) return false;

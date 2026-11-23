@@ -1,5 +1,6 @@
 import Ajv from "ajv";
 import {Job} from "./job.js";
+import {isJobReference} from "./parallel.js";
 import assert from "node:assert";
 import chalk from "chalk-template";
 import schema from "./schema.js";
@@ -65,7 +66,7 @@ For further troubleshooting, consider either of the following:
                     warnings.push(`${job.name}.needs[${i}] ignored, project key not supported`);
                     continue;
                 }
-                const needJob = jobs.find(j => j.baseName === need.job);
+                const needJob = jobs.find(j => isJobReference(j, need.job));
                 if (need.optional && !needJob) continue;
                 assert(needJob != null, chalk`needs: [{blueBright ${need.job}}] for {blueBright ${job.baseName}} could not be found`);
                 const needJobStageIndex = stages.indexOf(needJob.stage);
@@ -81,11 +82,11 @@ For further troubleshooting, consider either of the following:
         for (const job of jobs) {
             if (job.dependencies === null || job.dependencies.length === 0) continue;
 
-            const undefDeps = job.dependencies.filter((j) => !jobs.some(n => n.baseName === j));
+            const undefDeps = job.dependencies.filter((j) => !jobs.some(n => isJobReference(n, j)));
             assert(undefDeps.length !== job.dependencies.length, chalk`dependencies: [{blueBright ${undefDeps.join(",")}}] for {blueBright ${job.name}} cannot be found`);
 
             for (const dep of job.dependencies) {
-                const depJob = jobs.find(j => j.baseName === dep);
+                const depJob = jobs.find(j => isJobReference(j, dep));
                 assert(depJob != null, chalk`dependencies: [{blueBright ${dep}}] for {blueBright ${job.baseName}} could not be found`);
                 const depJobStageIndex = stages.indexOf(depJob.stage);
                 const jobStageIndex = stages.indexOf(job.stage);

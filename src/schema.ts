@@ -7,6 +7,11 @@ delete schema.definitions.cache_item.properties.key.oneOf[0].pattern; // cache k
 delete schema.definitions.job_template.properties.environment.oneOf[1].properties.name.minLength; // environment name rejects unexpanded variables
 // @ts-expect-error ts-expect-error
 delete schema.definitions.job_template.properties.environment.oneOf[1].properties.url.pattern; // environment url rejects variables with underscores
+// @ts-expect-error ts-expect-error
+delete schema.definitions.job_template.properties.trigger.oneOf[1].properties.include.oneOf[1].items.oneOf[2].properties.artifact.pattern; // trigger artifact rejects a variable such as $CHILD_PIPELINE_YML
+// GitLab accepts `parallel: null`, which clears a value inherited through extends or anchors
+// @ts-expect-error ts-expect-error
+schema.definitions.parallel.oneOf.push({"type": "null"});
 
 // @ts-expect-error ts-expect-error
 schema.definitions.job_template.properties.gclInjectSSHAgent = {
