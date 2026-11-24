@@ -57,16 +57,16 @@ test.concurrent("needs-parallel-matrix-static <test-partial> partial selector ma
     }, writeStreams);
 
     expect(writeStreams.stdoutLines).toEqual(expect.arrayContaining([
-        chalk`{black.bgGreenBright  PASS } {blueBright build-multi: [x64,linux]}`,
-        chalk`{black.bgGreenBright  PASS } {blueBright build-multi: [x64,mac]}`,
+        chalk`{black.bgGreenBright  PASS } {blueBright build-multi: [x64, linux]}`,
+        chalk`{black.bgGreenBright  PASS } {blueBright build-multi: [x64, mac]}`,
         chalk`{black.bgGreenBright  PASS } {blueBright test-partial}`,
     ]));
 
     expect(writeStreams.stdoutLines).not.toEqual(expect.arrayContaining([
-        chalk`{black.bgGreenBright  PASS } {blueBright build-multi: [arm,linux]}`,
+        chalk`{black.bgGreenBright  PASS } {blueBright build-multi: [arm, linux]}`,
     ]));
     expect(writeStreams.stdoutLines).not.toEqual(expect.arrayContaining([
-        chalk`{black.bgGreenBright  PASS } {blueBright build-multi: [arm,mac]}`,
+        chalk`{black.bgGreenBright  PASS } {blueBright build-multi: [arm, mac]}`,
     ]));
 });
 
@@ -81,18 +81,18 @@ test.concurrent("needs-parallel-matrix-static <test-full> full multi-key selecto
     }, writeStreams);
 
     expect(writeStreams.stdoutLines).toEqual(expect.arrayContaining([
-        chalk`{black.bgGreenBright  PASS } {blueBright build-multi: [x64,linux]}`,
+        chalk`{black.bgGreenBright  PASS } {blueBright build-multi: [x64, linux]}`,
         chalk`{black.bgGreenBright  PASS } {blueBright test-full  }`,
     ]));
 
     expect(writeStreams.stdoutLines).not.toEqual(expect.arrayContaining([
-        chalk`{black.bgGreenBright  PASS } {blueBright build-multi: [x64,mac]}`,
+        chalk`{black.bgGreenBright  PASS } {blueBright build-multi: [x64, mac]}`,
     ]));
     expect(writeStreams.stdoutLines).not.toEqual(expect.arrayContaining([
-        chalk`{black.bgGreenBright  PASS } {blueBright build-multi: [arm,linux]}`,
+        chalk`{black.bgGreenBright  PASS } {blueBright build-multi: [arm, linux]}`,
     ]));
     expect(writeStreams.stdoutLines).not.toEqual(expect.arrayContaining([
-        chalk`{black.bgGreenBright  PASS } {blueBright build-multi: [arm,mac]}`,
+        chalk`{black.bgGreenBright  PASS } {blueBright build-multi: [arm, mac]}`,
     ]));
 });
 

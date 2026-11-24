@@ -1,0 +1,45 @@
+---
+stages: [build, test]
+
+manual-block:
+  stage: build
+  when: manual
+  allow_failure: false
+  script:
+    - echo "manual-block ran"
+
+rule-manual:
+  stage: build
+  rules:
+    - when: manual
+  script:
+    - echo "rule-manual ran"
+
+build-ok:
+  stage: build
+  script:
+    - echo "build-ok ran"
+
+stage-follower:
+  stage: test
+  script:
+    - echo "stage-follower ran"
+
+needs-block:
+  stage: test
+  needs: [manual-block]
+  script:
+    - echo "needs-block ran"
+
+needs-rule-manual:
+  stage: test
+  needs: [rule-manual]
+  when: always
+  script:
+    - echo "needs-rule-manual ran"
+
+needs-ok:
+  stage: test
+  needs: [build-ok]
+  script:
+    - echo "needs-ok ran"

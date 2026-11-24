@@ -1,0 +1,34 @@
+---
+stages: [build, test]
+
+manual-opt:
+  stage: build
+  when: manual
+  script:
+    - echo "manual-opt ran"
+
+manual-opt-rules:
+  stage: build
+  when: manual
+  rules:
+    - if: $CI_PIPELINE_SOURCE
+  script:
+    - echo "manual-opt-rules ran"
+
+stage-follower:
+  stage: test
+  script:
+    - echo "stage-follower ran"
+
+dag-success:
+  stage: test
+  needs: [manual-opt]
+  script:
+    - echo "dag-success ran"
+
+dag-always:
+  stage: test
+  needs: [manual-opt]
+  when: always
+  script:
+    - echo "dag-always ran"

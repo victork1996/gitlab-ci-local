@@ -1,0 +1,29 @@
+---
+variables:
+  SRC_DIR: src
+
+include:
+  - local: .gitlab-ci-src.yml
+    rules:
+      # Include rules can't use global variables, so job rules below test $VAR expansion.
+      - changes: ["src/**/*.{ts,js}"]
+  - local: .gitlab-ci-docs.yml
+    rules:
+      - changes:
+          paths: ["docs/*.md"]
+
+always-job:
+  script:
+    - echo always
+
+changed-job:
+  rules:
+    - changes: ["${SRC_DIR}/app/*.ts"]
+  script:
+    - echo changed
+
+unchanged-job:
+  rules:
+    - changes: ["src/*.ts"]
+  script:
+    - echo unchanged

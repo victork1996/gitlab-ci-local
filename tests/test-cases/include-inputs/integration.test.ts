@@ -320,7 +320,8 @@ stages:
   - .post
 scan-website:
   script:
-    - echo true`;
+    - echo true
+  interruptible: true`;
 
     expect(writeStreams.stdoutLines[0]).toEqual(expected);
 });
@@ -341,7 +342,8 @@ stages:
   - .post
 scan-website:
   script:
-    - echo false`;
+    - echo false
+  interruptible: false`;
 
     expect(writeStreams.stdoutLines[0]).toEqual(expected);
 });

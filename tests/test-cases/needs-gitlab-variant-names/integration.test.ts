@@ -18,5 +18,5 @@ test.concurrent("needs-gitlab-variant-names --list-json", async () => {
     const jobs = JSON.parse(writeStreams.stdoutLines.join("\n"));
     const check = jobs.find((job: {name: string}) => job.name === "check");
     expect(check.needs.map((need: {job: string}) => need.job)).toEqual(["build: [linux, amd64]", "shard 2/2"]);
-    expect(jobs.map((job: {name: string}) => job.name)).toEqual(expect.arrayContaining(["build: [linux,amd64]", "shard: [2/2]"]));
+    expect(jobs.map((job: {name: string}) => job.name)).toEqual(expect.arrayContaining(["build: [linux, amd64]", "shard 2/2"]));
 });

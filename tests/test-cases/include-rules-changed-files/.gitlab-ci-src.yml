@@ -1,0 +1,4 @@
+---
+src-job:
+  script:
+    - echo src

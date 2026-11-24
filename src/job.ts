@@ -175,7 +175,8 @@ export class Job {
 
         this.when = jobData.when || "on_success";
         this.exists = jobData.exists || [];
-        this.allowFailure = jobData.allow_failure ?? false;
+        // GitLab defaults allow_failure to true for job-level `when: manual` (optional manual jobs)
+        this.allowFailure = jobData.allow_failure ?? this.when === "manual";
         this.dependencies = jobData.dependencies || null;
         this.rules = jobData.rules || null;
         if (typeof jobData.environment === "string") {

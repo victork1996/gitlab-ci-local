@@ -206,6 +206,12 @@ export function imageEach (jobName: string, gitlabData: any) {
     jobData.image = imageComplex(jobData.image);
 }
 
+// Keywords a job takes from `default:` (GitLab's entry/default.rb ALLOWED_KEYS, `inherit: true` in job/processable).
+const DEFAULT_INHERITED_KEYWORDS = [
+    "artifacts", "cache", "services", "image", "before_script", "after_script",
+    "hooks", "interruptible", "timeout", "retry", "tags", "id_tokens",
+];
+
 export function inheritDefault (gitlabData: any) {
     for (const [jobName, jobData] of Object.entries<any>(gitlabData)) {
         if (jobData.inherit?.default === false) continue;
@@ -218,10 +224,10 @@ export function inheritDefault (gitlabData: any) {
 
         const keywordsToInheritFrom = (Array.isArray(jobData.inherit?.default)) ?
             jobData.inherit.default :
-            ["artifacts", "cache", "services", "image", "before_script", "after_script"];
+            DEFAULT_INHERITED_KEYWORDS;
 
         for (const keyword of keywordsToInheritFrom) {
-            if (gitlabData.default[keyword] !== undefined) jobData[keyword] = jobData[keyword] ?? gitlabData.default[keyword];
+            if (gitlabData.default?.[keyword] !== undefined) jobData[keyword] = jobData[keyword] ?? gitlabData.default[keyword];
         }
     }
 }

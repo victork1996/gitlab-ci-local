@@ -1,0 +1,6 @@
+---
+job:
+  variables:
+    RELEASED: 2024-01-01
+  script:
+    - echo job

@@ -19,6 +19,7 @@ import {VariablesFromFiles, findEnvMatchedVariables} from "./variables-from-file
 import {Argv} from "./argv.js";
 import {WriteStreams} from "./write-streams.js";
 import {init as initPredefinedVariables} from "./predefined-variables.js";
+import {PsychDisallowedClass, psychTags} from "./yaml-psych.js";
 
 const MAX_FUNCTIONS = 3;
 const INCLUDE_INPUTS_SUPPORTED_TYPES = ["string", "boolean", "number", "array"] as const;
@@ -189,10 +190,11 @@ export class Parser {
             const parallelMatrixVariablesList = parallel.matrixVariablesList(jobData, jobName);
             for (const parallelMatrixVariables of parallelMatrixVariablesList) {
                 let matrixJobName = jobName;
+                // GitLab's names: normalizer/matrix_strategy.rb and normalizer/number_strategy.rb.
                 if (parallelMatrixVariables) {
-                    matrixJobName = `${jobName}: [${Object.values(parallelMatrixVariables ?? []).join(",")}]`;
+                    matrixJobName = parallel.matrixJobName(jobName, parallelMatrixVariables);
                 } else if (parallel.isPlainParallel(jobData)) {
-                    matrixJobName = `${jobName}: [${nodeIndex}/${parallelMatrixVariablesList.length}]`;
+                    matrixJobName = `${jobName} ${nodeIndex}/${parallelMatrixVariablesList.length}`;
                 }
 
                 // Resolve `$[[ matrix.X ]]` expressions in needs.parallel.matrix per-permutation
@@ -343,12 +345,17 @@ export class Parser {
             finalize: (carrier) => ({referenceData: carrier}),
             identify: () => false,
         });
-        const schema = yaml.CORE_SCHEMA.withTags(yaml.mergeTag, yaml.timestampTag, yaml.binaryTag, yaml.omapTag, yaml.pairsTag, yaml.setTag, referenceType);
+        // Plain scalars resolve like GitLab's Psych (YAML 1.1), which rejects dates and times as disallowed classes.
+        const schema = yaml.FAILSAFE_SCHEMA.withTags(yaml.mergeTag, ...psychTags, yaml.binaryTag, yaml.omapTag, yaml.pairsTag, yaml.setTag, referenceType);
         let fileData;
 
         try {
             fileData = yaml.loadAll(fileSplitClone.join("\n"), {schema}) as any[];
         } catch (e: any) {
+            if (e instanceof PsychDisallowedClass) {
+                const configFilePath = path.relative(process.cwd(), filePath);
+                throw new AssertionError({message: chalk`This GitLab CI configuration is invalid: \`{blueBright ${configFilePath}}\`: ${e.message} ({blueBright ${e.source}}). Quote the value to keep it as text.`});
+            }
             if (e instanceof yaml.YAMLException && e.reason === "duplicated mapping key") {
                 writeStreams?.stderr(chalk`{black.bgYellowBright  WARN } duplicated mapping key detected! Values will be overwritten!\n`);
                 fileData = yaml.loadAll(fileSplitClone.join("\n"), {schema, json: true}) as any[];

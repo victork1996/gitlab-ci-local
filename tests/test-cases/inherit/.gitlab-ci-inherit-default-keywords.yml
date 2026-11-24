@@ -1,0 +1,33 @@
+---
+default:
+  tags: [docker]
+  retry: 2
+  timeout: 10m
+  interruptible: true
+  id_tokens:
+    TOKEN:
+      aud: https://example.com
+  hooks:
+    pre_get_sources_script:
+      - echo hook
+
+inherits-all:
+  script:
+    - echo script
+
+overrides-tags:
+  tags: [shell]
+  script:
+    - echo script
+
+inherits-none:
+  inherit:
+    default: false
+  script:
+    - echo script
+
+inherits-listed:
+  inherit:
+    default: [tags, retry]
+  script:
+    - echo script

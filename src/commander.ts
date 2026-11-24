@@ -76,7 +76,9 @@ export class Commander {
             potentialStarters.filter(p => !jobArgs.includes(p.name)) :
             potentialStarters;
 
-        await Executor.runLoop(argv, Array.from(jobSet), stages, starters);
+        // Naming a manual job on the command line plays it
+        const played = [...argv.manual, ...potentialStarters.filter(p => jobArgs.includes(p.name) || jobArgs.includes(p.baseName)).map(p => p.name)];
+        await Executor.runLoop(argv, Array.from(jobSet), stages, starters, played);
         await Commander.printReport({
             cwd: argv.cwd,
             showTimestamps: argv.showTimestamps,

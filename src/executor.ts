@@ -4,10 +4,15 @@ import assert from "node:assert";
 import {Argv} from "./argv.js";
 import {isJobReference, matrixSelectorMatches} from "./parallel.js";
 
+/** Where a job stands: finished with a result, not run (skipped), waiting to be played (manual), able to start (ready), or not decided yet (waiting). */
+type JobState = "success" | "warning" | "failed" | "skipped" | "manual" | "ready" | "waiting";
+type CompositeKey = "success" | "warning" | "failed" | "skipped" | "manual" | "ignored" | "waiting";
+
 export class Executor {
 
-    static async runLoop (argv: Argv, jobs: ReadonlyArray<Job>, stages: readonly string[], potentialStarters: Job[]): Promise<void> {
-        const queue = Executor.getStartCandidates(jobs, stages, potentialStarters, argv.manual);
+    /** `manuals` lists the manual jobs that count as played (defaults to --manual). */
+    static async runLoop (argv: Argv, jobs: ReadonlyArray<Job>, stages: readonly string[], potentialStarters: Job[], manuals: string[] = argv.manual): Promise<void> {
+        const queue = Executor.getStartCandidates(jobs, stages, potentialStarters, manuals);
         if (queue.length === 0) return;
 
         const startNext = async (): Promise<void> => {
@@ -20,47 +25,82 @@ export class Executor {
             return startNext();
         };
         await Promise.all(Array.from({length: argv.concurrency ?? queue.length}, startNext));
-        return Executor.runLoop(argv, jobs, stages, potentialStarters);
+        return Executor.runLoop(argv, jobs, stages, potentialStarters, manuals);
     }
 
     static getStartCandidates (jobs: ReadonlyArray<Job>, stages: readonly string[], potentialStarters: readonly Job[], manuals: string[]) {
+        const states = new Map<Job, JobState>();
         const startCandidates = [];
-
         for (const job of [...new Set<Job>(potentialStarters)]) {
             if (job.started) continue;
-
-            const jobsToWaitFor = Executor.getPastToWaitFor(jobs, stages, job, manuals);
-            if (Executor.isNotFinished(jobsToWaitFor)) {
-                continue;
+            if (Executor.getJobState(jobs, stages, job, manuals, states) === "ready") {
+                startCandidates.push(job);
             }
-            if (job.when === "on_success" && Executor.isPastFailed(jobsToWaitFor)) {
-                continue;
-            }
-            if (job.when === "manual" && Executor.isPastFailed(jobsToWaitFor)) {
-                continue;
-            }
-            if (job.when === "on_failure" && !Executor.isPastFailed(jobsToWaitFor)) {
-                continue;
-            }
-
-            startCandidates.push(job);
         }
         return startCandidates;
     }
 
-    static isPastFailed (jobsToWaitFor: ReadonlyArray<Job>) {
-        const failJobs = jobsToWaitFor.filter(j => {
-            if (j.allowFailure) {
-                return false;
-            }
-            return (j.preScriptsExitCode ? j.preScriptsExitCode : 0) > 0;
-        });
-        return failJobs.length > 0;
+    /**
+     * Mirrors GitLab's atomic processing: a job's state comes from the composite status of the jobs
+     * it depends on (its direct needs, or every job of earlier stages) and its own `when`.
+     */
+    static getJobState (jobs: ReadonlyArray<Job>, stages: readonly string[], job: Job, manuals: string[], states: Map<Job, JobState>): JobState {
+        const known = states.get(job);
+        if (known) return known;
+        if (job.finished) return job.jobStatus === "failed" ? "failed" : job.jobStatus === "warning" ? "warning" : "success";
+        if (job.started) return "waiting";
+
+        states.set(job, "waiting"); // Guards against needs cycles
+        const dag = job.needs != null;
+        const deps = dag ? Executor.getNeededToWaitFor(jobs, job) : Executor.getPreviousToWaitFor(jobs, stages, job).filter(j => j.when !== "never");
+        const previous = Executor.compositeStatus(deps.map(d => Executor.compositeKey(d, Executor.getJobState(jobs, stages, d, manuals, states))), dag);
+
+        let state: JobState;
+        if (previous === "waiting" || previous === "manual") {
+            // Not complete yet, or blocked by a manual job that must be played first
+            state = "waiting";
+        } else if (Executor.validPreviousStatuses(job.when, dag).includes(previous)) {
+            state = job.when === "manual" && !manuals.includes(job.name) ? "manual" : "ready";
+        } else {
+            state = "skipped";
+        }
+        states.set(job, state);
+        return state;
     }
 
-    static isNotFinished (jobsToWaitFor: ReadonlyArray<Job>) {
-        const notFinishedJobs = jobsToWaitFor.filter(j => !j.finished);
-        return notFinishedJobs.length > 0;
+    static compositeKey (job: Job, state: JobState): CompositeKey {
+        if (state === "manual") return job.allowFailure === true ? "ignored" : "manual";
+        if (state === "ready") return "waiting";
+        return state;
+    }
+
+    /** Port of lib/gitlab/ci/status/composite.rb, limited to the statuses gitlab-ci-local produces. */
+    static compositeStatus (keys: CompositeKey[], dag: boolean): "success" | "failed" | "skipped" | "waiting" | "manual" {
+        const set = new Set(keys);
+        const onlyOf = (...names: CompositeKey[]) => set.size > 0 && [...set].every(k => names.includes(k));
+        if (set.size === 0) return "success";
+        if (dag && (set.has("skipped") || set.has("ignored"))) return "skipped";
+        if (onlyOf("skipped", "ignored")) return "skipped";
+        if (onlyOf("success", "skipped", "warning", "ignored")) return "success";
+        if (set.has("waiting")) return "waiting";
+        if (set.has("manual")) return "manual";
+        return "failed";
+    }
+
+    /** Port of Ci::ProcessBuildService#valid_statuses_for_build. */
+    static validPreviousStatuses (when: string, dag: boolean): string[] {
+        switch (when) {
+            case "on_success":
+            case "manual":
+            case "delayed":
+                return dag ? ["success"] : ["success", "skipped"];
+            case "on_failure":
+                return ["failed"];
+            case "always":
+                return ["success", "failed", "skipped"];
+            default:
+                return [];
+        }
     }
 
     static getFailed (jobs: ReadonlyArray<Job>) {
@@ -75,7 +115,7 @@ export class Executor {
             const loopJob = waitForLoopArray.pop();
             assert(loopJob != null, "Job not found in getPastToWaitFor, should be impossible!");
             if (loopJob.needs) {
-                const neededToWaitFor = this.getNeededToWaitFor(jobs, manuals, loopJob);
+                const neededToWaitFor = this.getNeededToWaitFor(jobs, loopJob);
                 waitForLoopArray.push(...neededToWaitFor);
             } else {
                 const previousToWaitFor = this.getPreviousToWaitFor(jobs, stages, loopJob);
@@ -88,7 +128,7 @@ export class Executor {
         return [...jobsToWaitForSet];
     }
 
-    static getNeededToWaitFor (jobs: ReadonlyArray<Job>, manuals: string[], job: Job) {
+    static getNeededToWaitFor (jobs: ReadonlyArray<Job>, job: Job) {
         const toWaitFor = [];
         assert(job.needs != null, chalk`${job.name}.needs cannot be null in getNeededToWaitFor`);
         for (const need of job.needs) {
@@ -103,7 +143,6 @@ export class Executor {
                     continue;
                 }
                 assert(j.when !== "never", chalk`{blueBright ${j.name}} is when:never, but its needed by {blueBright ${job.name}}`);
-                assert(j.when !== "manual" || manuals.includes(j.name), chalk`{blueBright ${j.name}} is when:manual, its needed by {blueBright ${job.name}}, and not specified in --manual`);
                 assert(job.name !== j.name, chalk`This GitLab CI configuration is invalid: The pipeline has circular dependencies: self-dependency: {blueBright ${need.job}}.`);
                 toWaitFor.push(j);
             }

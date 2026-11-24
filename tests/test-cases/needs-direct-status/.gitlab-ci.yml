@@ -1,0 +1,40 @@
+---
+stages: [build, test, deploy]
+
+a:
+  stage: build
+  script:
+    - exit 1
+
+b:
+  stage: test
+  needs: [a]
+  when: always
+  script:
+    - echo "b ran"
+
+c:
+  stage: deploy
+  needs: [b]
+  script:
+    - echo "c ran"
+
+x:
+  stage: test
+  needs: [a]
+  script:
+    - echo "x ran"
+
+y:
+  stage: deploy
+  needs: [x]
+  when: on_failure
+  script:
+    - echo "y ran"
+
+z:
+  stage: deploy
+  needs: [x]
+  when: always
+  script:
+    - echo "z ran"

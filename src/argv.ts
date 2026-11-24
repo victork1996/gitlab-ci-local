@@ -68,6 +68,7 @@ export class Argv {
     };
 
     map: Map<string, any> = new Map<string, any>();
+    private ruleChangedFilesCache: {file: string; paths: string[]} | undefined;
     private readonly writeStreams: WriteStreams | undefined;
 
     private async fallbackCwd (args: any) {
@@ -181,6 +182,21 @@ export class Argv {
 
     get evaluateRuleChanges (): boolean {
         return this.map.get("evaluateRuleChanges") ?? Argv.default.evaluateRuleChanges;
+    }
+
+    // Paths from --rule-changed-files (one per line, relative to the repository root), or null when not given.
+    get ruleChangedFiles (): string[] | null {
+        const file = this.map.get("ruleChangedFiles");
+        if (file == null || file === "") return null;
+        const cached = this.ruleChangedFilesCache;
+        if (cached && cached.file === file) return cached.paths;
+        const filePath = path.isAbsolute(file) ? file : `${this.cwd}/${file}`;
+        assert(fs.existsSync(filePath), `--rule-changed-files ${filePath} could not be found`);
+        const paths = fs.readFileSync(filePath, "utf8").split(/\r?\n/)
+            .map(line => line.trim().replaceAll("\\", "/").replace(/^\.\//, ""))
+            .filter(line => line !== "");
+        this.ruleChangedFilesCache = {file, paths};
+        return paths;
     }
 
     get file (): string {

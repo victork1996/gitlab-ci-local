@@ -9,6 +9,7 @@ import {needsComplex} from "./data-expander.js";
 import {GitData} from "./git-data.js";
 import {Argv} from "./argv.js";
 import {expandTextWith} from "./expand.js";
+import {fnmatch} from "./fnmatch.js";
 
 type RuleResultOpt = {
     argv: Argv;
@@ -19,7 +20,7 @@ type RuleResultOpt = {
 
 export function getRulesResult (opt: RuleResultOpt, gitData: GitData, jobWhen: string = "on_success", jobAllowFailure: boolean | {exit_codes: number | number[]} | undefined = undefined): {when: string; allowFailure: boolean | {exit_codes: number | number[]}; variables?: {[name: string]: string}; needs?: Need[]} {
     let when = "never";
-    const {evaluateRuleChanges: shouldEvaluateRuleChanges} = opt.argv;
+    const {evaluateRuleChanges: shouldEvaluateRuleChanges, ruleChangedFiles: changedFiles} = opt.argv;
 
     // optional manual jobs allowFailure defaults to true https://docs.gitlab.com/ee/ci/jobs/job_control.html#types-of-manual-jobs
     let allowFailure: boolean | {exit_codes: number | number[]} = jobAllowFailure ?? jobWhen === "manual";
@@ -29,7 +30,9 @@ export function getRulesResult (opt: RuleResultOpt, gitData: GitData, jobWhen: s
     for (const rule of opt.rules) {
         if (!evaluateRuleIf(rule.if, opt.variables)) continue;
         if (!evaluateRuleExist(opt.cwd, rule.exists)) continue;
-        if (shouldEvaluateRuleChanges && !evaluateRuleChanges(gitData.branches.default, rule.changes, opt.cwd)) continue;
+        if (changedFiles) {
+            if (!evaluateRuleChangedFiles(changedFiles, rule.changes, opt.variables)) continue;
+        } else if (shouldEvaluateRuleChanges && !evaluateRuleChanges(gitData.branches.default, rule.changes, opt.cwd)) continue;
 
         when = rule.when ? rule.when : jobWhen;
         allowFailure = rule.allow_failure ?? allowFailure;
@@ -190,4 +193,20 @@ export function evaluateRuleChanges (defaultBranch: string, ruleChanges: string[
         posix: false,
         dot: true,
     });
+}
+
+// GitLab's ExpandVariables.expand_existing: `$VAR`, `${VAR}` and `%VAR%` expand when defined and stay as typed otherwise.
+function expandExisting (value: string, variables: {[key: string]: string}): string {
+    return value.replaceAll(/\$([a-zA-Z_]\w*)|\$\{([a-zA-Z_]\w*)\}|%([a-zA-Z_]\w*)%/g, (match, a, b, c) => variables[a ?? b ?? c] ?? match);
+}
+
+// rules:changes against the paths from --rule-changed-files, matched like GitLab's Clause::Changes with Ruby's
+// File.fnmatch?. `changes:compare_to` is not modeled: the list already holds the changes to compare.
+export function evaluateRuleChangedFiles (changedFiles: string[], ruleChanges: string[] | {paths?: string[]} | undefined, variables: {[key: string]: string}): boolean {
+    if (ruleChanges === undefined) return true;
+    const globs = Array.isArray(ruleChanges) ? ruleChanges : ruleChanges.paths;
+    if (globs === undefined) return true; // changes:regexp is not modeled.
+    if (changedFiles.length === 0) return false;
+    const expanded = [...new Set(globs.map(glob => expandExisting(String(glob), variables)))];
+    return changedFiles.some(file => expanded.some(glob => fnmatch(glob, file)));
 }

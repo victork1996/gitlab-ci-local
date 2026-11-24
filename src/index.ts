@@ -163,6 +163,11 @@ process.on("SIGUSR2", async () => {
             requiresArg: false,
             default: Argv.default.evaluateRuleChanges,
         })
+        .option("rule-changed-files", {
+            type: "string",
+            description: "File listing changed paths, one per line, to evaluate rules:changes against instead of git. Overrides --evaluate-rule-changes",
+            requiresArg: true,
+        })
         .option("needs", {
             type: "boolean",
             description: "Run needed jobs, when executing specific jobs",

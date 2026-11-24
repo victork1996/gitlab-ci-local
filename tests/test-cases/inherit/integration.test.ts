@@ -1,4 +1,5 @@
 import {WriteStreamsMock} from "../../../src/write-streams.js";
+import * as yaml from "js-yaml";
 import {handler} from "../../../src/handler.js";
 import {initSpawnSpy} from "../../mocks/utils.mock.js";
 import {WhenStatics} from "../../mocks/when-statics.js";
@@ -84,4 +85,32 @@ inherit-default-before_script_and_image:
 `;
 
     expect(writeStreams.stdoutLines.join("\n")).toEqual(expected.trim());
+});
+
+test.concurrent("inherit:default tags, retry, timeout, interruptible, id_tokens and hooks", async () => {
+    const writeStreams = new WriteStreamsMock();
+    await handler({
+        file: ".gitlab-ci-inherit-default-keywords.yml",
+        cwd: "tests/test-cases/inherit",
+        preview: true,
+        stateDir: ".gitlab-ci-local-inherit-default-keywords",
+    }, writeStreams);
+
+    const preview = yaml.load(writeStreams.stdoutLines.join("\n")) as any;
+    const inherited = {
+        tags: ["docker"],
+        retry: 2,
+        timeout: "10m",
+        interruptible: true,
+        id_tokens: {TOKEN: {aud: "https://example.com"}},
+        hooks: {pre_get_sources_script: ["echo hook"]},
+    };
+    expect(preview["inherits-all"]).toMatchObject(inherited);
+    expect(preview["overrides-tags"]).toMatchObject({...inherited, tags: ["shell"]});
+    for (const keyword of Object.keys(inherited)) {
+        expect(preview["inherits-none"][keyword]).toBeUndefined();
+    }
+    expect(preview["inherits-listed"]).toMatchObject({tags: ["docker"], retry: 2});
+    expect(preview["inherits-listed"].timeout).toBeUndefined();
+    expect(preview["default"]).toBeUndefined();
 });

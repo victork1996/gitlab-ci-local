@@ -1,0 +1,29 @@
+---
+# Plain scalars resolve like GitLab's Psych (YAML 1.1); variables then take Ruby's `.to_s`.
+variables:
+  GLOBAL_ON: on
+
+job:
+  parallel: 2
+  retry: 1
+  variables:
+    YES_UPPER: YES
+    OFF_MIXED: Off
+    Y_LETTER: y
+    N_LETTER: n
+    OCTAL: 0755
+    HEX: 0x1F
+    BINARY: 0b101
+    SEXAGESIMAL: 1:30
+    COMMAS: 1,000
+    NOT_OCTAL: 08
+    FLOAT_ONE: 1.0
+    FLOAT_TRAILING_ZERO: 1.50
+    FLOAT_VERSION: 3.10
+    FLOAT_EXPONENT: 1.5e+3
+    NOT_A_FLOAT: 1e3
+    QUOTED_ON: "on"
+    QUOTED_FLOAT: "1.0"
+    NULL_VALUE: ~
+  script:
+    - echo job

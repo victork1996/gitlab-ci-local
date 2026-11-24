@@ -50,14 +50,15 @@ export function findMatchingNeed (consumerNeeds: ReadonlyArray<Need> | null, pro
 
 type JobReference = {name: string; baseName: string; matrixVariables: MatrixVariables | null};
 
-// The names `needs:` and `dependencies:` may use for a job: its base name, its own name, and the name GitLab gives a
-// parallel variant (`build: [linux, amd64]` for a matrix, `test 2/3` for parallel: 3), which configs copy from GitLab.
+// GitLab names a matrix variant `build: [linux, amd64]` (normalizer/matrix_strategy.rb).
+export function matrixJobName (baseName: string, matrixVariables: MatrixVariables): string {
+    return `${baseName}: [${Object.values(matrixVariables).join(", ")}]`;
+}
+
+// The names `needs:` and `dependencies:` may use for a job: its base name (fans out to every parallel variant) and
+// its own name, which is the name GitLab gives the variant (`build: [linux, amd64]`, `test 2/3`).
 export function jobReferences (job: JobReference): string[] {
-    const names = [job.name, job.baseName];
-    if (job.matrixVariables) names.push(`${job.baseName}: [${Object.values(job.matrixVariables).join(", ")}]`);
-    const numbered = /: \[(\d+)\/(\d+)\]$/.exec(job.name);
-    if (!job.matrixVariables && numbered && job.name !== job.baseName) names.push(`${job.baseName} ${numbered[1]}/${numbered[2]}`);
-    return names;
+    return job.name === job.baseName ? [job.name] : [job.name, job.baseName];
 }
 
 export function isJobReference (job: JobReference, reference: string): boolean {
