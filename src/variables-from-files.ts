@@ -170,19 +170,25 @@ export class VariablesFromFiles {
     }
 }
 
-export function findEnvMatchedVariables (variables: {[name: string]: CICDVariable}, fileVariablesDir?: string, environment?: {name: string}) {
+// writeFiles: false gives file variables their paths without writing the files, for a first pass whose
+// values only evaluate rules (the job's project slug, part of the folder name, is not known yet then).
+export function findEnvMatchedVariables (variables: {[name: string]: CICDVariable}, fileVariablesDir?: string, environment?: {name: string}, writeFiles = true) {
     const envMatchedVariables: {[key: string]: string} = {};
     for (const [k, v] of Object.entries(variables)) {
         for (const entry of v.environments) {
             if (environment?.name.match(entry.regexp) || entry.regexp.source === ".*") {
                 if (fileVariablesDir != null && v.type === "file" && !entry.fileSource) {
                     envMatchedVariables[k] = `${fileVariablesDir}/${k}`;
-                    fs.mkdirpSync(`${fileVariablesDir}`);
-                    fs.writeFileSync(`${fileVariablesDir}/${k}`, entry.content);
+                    if (writeFiles) {
+                        fs.mkdirpSync(`${fileVariablesDir}`);
+                        fs.writeFileSync(`${fileVariablesDir}/${k}`, entry.content);
+                    }
                 } else if (fileVariablesDir != null && v.type === "file" && entry.fileSource) {
                     envMatchedVariables[k] = `${fileVariablesDir}/${k}`;
-                    fs.mkdirpSync(`${fileVariablesDir}`);
-                    fs.copyFileSync(entry.fileSource, `${fileVariablesDir}/${k}`);
+                    if (writeFiles) {
+                        fs.mkdirpSync(`${fileVariablesDir}`);
+                        fs.copyFileSync(entry.fileSource, `${fileVariablesDir}/${k}`);
+                    }
                 } else {
                     envMatchedVariables[k] = entry.content;
                 }

@@ -189,7 +189,8 @@ export class Job {
         }
 
         const matrixVariables = opt.matrixVariables ?? {};
-        const fileVariables = this.containerFileVariables(findEnvMatchedVariables(variablesFromFiles, this.fileVariablesDir));
+        // Only the paths matter here, to evaluate rules: the files are written once the project slug is known.
+        const fileVariables = this.containerFileVariables(findEnvMatchedVariables(variablesFromFiles, this.fileVariablesDir, undefined, false));
         const predefinedVariables = this._predefinedVariables(opt);
         this._variables = {...predefinedVariables, ...this.globalVariables, ...jobVariables, ...matrixVariables, ...fileVariables, ...argvVariables};
 
