@@ -1,20 +1,21 @@
 import Ajv from "ajv";
 import {Job} from "./job.js";
 import {isJobReference} from "./parallel.js";
-import assert from "node:assert";
 import chalk from "chalk-template";
 import schema from "./schema.js";
 import {betterAjvErrors} from "./schema-error.js";
 import terminalLink from "terminal-link";
 import {Argv} from "./argv.js";
+import {ConfigError, SourceLocation, Sources, configAssert} from "./source-map.js";
 
 const MAX_ERRORS = 5;
 
 export class Validator {
-    static jsonSchemaValidation ({pathToExpandedGitLabCi, gitLabCiConfig, argv}: {
+    static jsonSchemaValidation ({pathToExpandedGitLabCi, gitLabCiConfig, argv, sources}: {
         pathToExpandedGitLabCi: string;
         gitLabCiConfig: object;
         argv: Argv;
+        sources?: Sources;
     }) {
         const ajv = new Ajv({
             verbose: true,
@@ -33,15 +34,20 @@ export class Validator {
         }).filter(betterError => !argv.ignoreSchemaPaths.includes(betterError.schemaPath));
 
         let e: string = "";
+        const locations: {location: SourceLocation; about: string}[] = [];
         for (let i = 0, len = betterErrors.length; i < len; i++) {
             if (i + 1 > MAX_ERRORS) {
                 e += `\t... and ${len - MAX_ERRORS} more`;
                 break;
             }
             e += chalk`\t• {redBright ${betterErrors[i].message}} at {blueBright ${betterErrors[i].path}} {grey [${betterErrors[i].schemaPath}]}\n`;
+            const pointer = (betterErrors[i].instancePath ?? "").split("/").slice(1).map(part => part.replaceAll("~1", "/").replaceAll("~0", "~"));
+            const location = sources?.locate(pointer, betterErrors[i].atKey);
+            if (location) locations.push({location, about: betterErrors[i].path});
         }
 
-        assert(valid || betterErrors.length == 0, chalk`
+        if (betterErrors.length == 0) return;
+        const error = new ConfigError(chalk`
 {reset Invalid .gitlab-ci.yml configuration!
 ${e.trimEnd()}
 
@@ -50,6 +56,8 @@ For further troubleshooting, consider either of the following:
 \t• Use --ignore-schema-paths "#/definitions/tags/minItems" --ignore-schema-paths "#/additionalProperties" to partially disable certain validation rule
 \t• Use --json-schema-validation=false to disable schema validation (not recommended)}
 `);
+        error.locations = locations;
+        throw error;
     }
 
     private static needs (jobs: ReadonlyArray<Job>, stages: readonly string[]): string[] {
@@ -68,10 +76,10 @@ For further troubleshooting, consider either of the following:
                 }
                 const needJob = jobs.find(j => isJobReference(j, need.job));
                 if (need.optional && !needJob) continue;
-                assert(needJob != null, chalk`needs: [{blueBright ${need.job}}] for {blueBright ${job.baseName}} could not be found`);
+                configAssert(needJob != null, chalk`needs: [{blueBright ${need.job}}] for {blueBright ${job.baseName}} could not be found`, {path: [job.baseName, "needs", i, "job"]});
                 const needJobStageIndex = stages.indexOf(needJob.stage);
                 const jobStageIndex = stages.indexOf(job.stage);
-                assert(needJobStageIndex <= jobStageIndex, chalk`needs: [{blueBright ${needJob.name}}] for {blueBright ${job.name}} is in a future stage`);
+                configAssert(needJobStageIndex <= jobStageIndex, chalk`needs: [{blueBright ${needJob.name}}] for {blueBright ${job.name}} is in a future stage`, {path: [job.baseName, "needs", i, "job"]});
             }
 
         }
@@ -83,14 +91,14 @@ For further troubleshooting, consider either of the following:
             if (job.dependencies === null || job.dependencies.length === 0) continue;
 
             const undefDeps = job.dependencies.filter((j) => !jobs.some(n => isJobReference(n, j)));
-            assert(undefDeps.length !== job.dependencies.length, chalk`dependencies: [{blueBright ${undefDeps.join(",")}}] for {blueBright ${job.name}} cannot be found`);
+            configAssert(undefDeps.length !== job.dependencies.length, chalk`dependencies: [{blueBright ${undefDeps.join(",")}}] for {blueBright ${job.name}} cannot be found`, {path: [job.baseName, "dependencies"]});
 
             for (const dep of job.dependencies) {
                 const depJob = jobs.find(j => isJobReference(j, dep));
-                assert(depJob != null, chalk`dependencies: [{blueBright ${dep}}] for {blueBright ${job.baseName}} could not be found`);
+                configAssert(depJob != null, chalk`dependencies: [{blueBright ${dep}}] for {blueBright ${job.baseName}} could not be found`, {path: [job.baseName, "dependencies", job.dependencies.indexOf(dep)]});
                 const depJobStageIndex = stages.indexOf(depJob.stage);
                 const jobStageIndex = stages.indexOf(job.stage);
-                assert(depJobStageIndex <= jobStageIndex, chalk`dependencies: [{blueBright ${depJob.name}}] for {blueBright ${job.name}} is in a future stage`);
+                configAssert(depJobStageIndex <= jobStageIndex, chalk`dependencies: [{blueBright ${depJob.name}}] for {blueBright ${job.name}} is in a future stage`, {path: [job.baseName, "dependencies", job.dependencies.indexOf(dep)]});
             }
         }
     }
@@ -107,7 +115,7 @@ For further troubleshooting, consider either of the following:
                 return needs.some(n => n.job === dep);
             });
             const assertMsg = `${job.formattedJobName} needs: '${needs.map(n => n.job).join(",")}' doesn't fully contain dependencies: '${dependencies.join(",")}'`;
-            assert(everyIncluded, assertMsg);
+            configAssert(everyIncluded, assertMsg, {path: [job.baseName, "dependencies"]});
         }
     }
 
@@ -130,23 +138,23 @@ For further troubleshooting, consider either of the following:
     private static scriptBlank (jobs: ReadonlyArray<Job>) {
         for (const job of jobs) {
             if (job.trigger) continue; // Jobs with trigger are allowed to have empty script
-            assert(job.scripts.length > 0, chalk`{blue ${job.name}} has empty script`);
+            configAssert(job.scripts.length > 0, chalk`{blue ${job.name}} has empty script`, {path: [job.baseName, "script"]});
         }
     }
 
     private static rulesBlank (jobs: ReadonlyArray<Job>) {
         for (const job of jobs) {
             if (!job.rules) continue;
-            assert(job.rules.length > 0, chalk`{blue ${job.name}} {yellow rules:} config can't be blank`);
+            configAssert(job.rules.length > 0, chalk`{blue ${job.name}} {yellow rules:} config can't be blank`, {path: [job.baseName, "rules"]});
         }
     }
 
     private static arrayOfStrings (jobs: ReadonlyArray<Job>) {
         for (const job of jobs) {
             if (job.trigger) continue;
-            job.beforeScripts.forEach((s: any) => assert(typeof s === "string", chalk`{blue ${job.name}} before_script contains non string value`));
-            job.afterScripts.forEach((s: any) => assert(typeof s === "string", chalk`{blue ${job.name}} after_script contains non string value`));
-            job.scripts.forEach((s: any) => assert(typeof s === "string", chalk`{blue ${job.name}} script contains non string value`));
+            job.beforeScripts.forEach((s: any, i: number) => configAssert(typeof s === "string", chalk`{blue ${job.name}} before_script contains non string value`, {path: [job.baseName, "before_script", i]}));
+            job.afterScripts.forEach((s: any, i: number) => configAssert(typeof s === "string", chalk`{blue ${job.name}} after_script contains non string value`, {path: [job.baseName, "after_script", i]}));
+            job.scripts.forEach((s: any, i: number) => configAssert(typeof s === "string", chalk`{blue ${job.name}} script contains non string value`, {path: [job.baseName, "script", i]}));
         }
     }
 

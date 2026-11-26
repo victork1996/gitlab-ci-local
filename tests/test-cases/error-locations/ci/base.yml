@@ -1,0 +1,6 @@
+---
+.base:
+  stage: test
+  needs: [build-job, "missing-job"]   # the second one does not exist
+  script:
+    - echo base

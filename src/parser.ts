@@ -20,6 +20,7 @@ import {Argv} from "./argv.js";
 import {WriteStreams} from "./write-streams.js";
 import {init as initPredefinedVariables} from "./predefined-variables.js";
 import {PsychDisallowedClass, psychTags} from "./yaml-psych.js";
+import {SourceFile, Sources, configAssert, recordSource, resolveLocation, withWhere} from "./source-map.js";
 
 const MAX_FUNCTIONS = 3;
 const INCLUDE_INPUTS_SUPPORTED_TYPES = ["string", "boolean", "number", "array"] as const;
@@ -36,6 +37,8 @@ export class Parser {
     readonly writeStreams: WriteStreams;
     readonly pipelineIid: number;
     readonly expandVariables: boolean;
+    // Where each value of the pipeline was written, for errors to point at.
+    readonly sources: Sources;
 
     private constructor (argv: Argv, writeStreams: WriteStreams, pipelineIid: number, jobs: Job[], expandVariables: boolean) {
         this.argv = argv;
@@ -43,6 +46,7 @@ export class Parser {
         this.pipelineIid = pipelineIid;
         this.jobs = jobs;
         this.expandVariables = expandVariables;
+        this.sources = new Sources(argv.cwd);
     }
 
     get stages (): readonly string[] {
@@ -60,8 +64,13 @@ export class Parser {
     static async create (argv: Argv, writeStreams: WriteStreams, pipelineIid: number, jobs: Job[], expandVariables: boolean = true) {
         const parser = new Parser(argv, writeStreams, pipelineIid, jobs, expandVariables);
         const time = process.hrtime();
-        await parser.init();
-        const warnings = Validator.run(parser.jobs, parser.stages);
+        let warnings: string[];
+        try {
+            await parser.init();
+            warnings = Validator.run(parser.jobs, parser.stages);
+        } catch (e) {
+            throw resolveLocation(e, parser.sources);
+        }
 
         for (const job of parser.jobs) {
             if (job.artifacts === null) {
@@ -86,6 +95,7 @@ export class Parser {
                 pathToExpandedGitLabCi,
                 gitLabCiConfig: parser.gitlabData,
                 argv,
+                sources: parser.sources,
             });
             if (argv.childPipelineDepth == 0) writeStreams.stderr(chalk`{grey json schema validated in ${prettyHrtime(process.hrtime(time))}}\n`);
         }
@@ -125,6 +135,7 @@ export class Parser {
         ParserIncludes.resetCount();
 
         const gitlabData: any = deepMerge({}, ...yamlDataList);
+        this.sources.setFiles(yamlDataList);
 
         // Expand various fields in gitlabData
         DataExpander.jobExtends(gitlabData);
@@ -149,7 +160,7 @@ export class Parser {
             }
         }
 
-        assert(Array.isArray(gitlabData.stages), chalk`{yellow stages:} must be an array`);
+        configAssert(Array.isArray(gitlabData.stages), chalk`{yellow stages:} must be an array`, {path: ["stages"]});
         if (!gitlabData.stages.includes(".pre")) {
             gitlabData.stages.unshift(".pre");
         }
@@ -160,8 +171,9 @@ export class Parser {
 
         // Check job variables for invalid hash of key value pairs, and cast numbers to strings
         forEachRealJob(gitlabData, (jobName, jobData) => {
-            assert(jobData.when !== "never",
+            configAssert(jobData.when !== "never",
                 chalk`This GitLab CI configuration is invalid: jobs:${jobName} when:never can only be used in a rules section or workflow:rules`,
+                {path: [jobName, "when"]},
             );
             for (const [key, value] of Object.entries(jobData.variables ?? {})) {
                 jobData.variables[key] = DataExpander.normalizeVariables(value);
@@ -170,9 +182,10 @@ export class Parser {
             for (let i = 0; i < (jobData.services ?? []).length; i++) {
                 const service = jobData.services[i];
                 for (const [key, value] of Object.entries(service.variables || {})) {
-                    assert(
+                    configAssert(
                         typeof value === "string" || typeof value === "number" || typeof value === "boolean",
                         chalk`{blueBright ${jobName}.services[${i}]} has invalid variables hash of key value pairs. ${key}=${value}`,
+                        {path: [jobName, "services", i, "variables", key]},
                     );
                     jobData.services[i].variables[key] = String(value);
                 }
@@ -226,7 +239,7 @@ export class Parser {
                     expandVariables: this.expandVariables,
                 });
                 const foundStage = this.stages.includes(job.stage);
-                assert(foundStage, chalk`{yellow stage:${job.stage}} not found for {blueBright ${job.name}}`);
+                configAssert(foundStage, chalk`{yellow stage:${job.stage}} not found for {blueBright ${job.name}}`, {path: [jobName, "stage"]});
                 this.jobs.push(job);
                 nodeIndex++;
             }
@@ -348,22 +361,32 @@ export class Parser {
         // Plain scalars resolve like GitLab's Psych (YAML 1.1), which rejects dates and times as disallowed classes.
         const schema = yaml.FAILSAFE_SCHEMA.withTags(yaml.mergeTag, ...psychTags, yaml.binaryTag, yaml.omapTag, yaml.pairsTag, yaml.setTag, referenceType);
         let fileData;
+        // The two steps of yaml.loadAll, keeping the parser's events: they say where each value is written.
+        const source = fileSplitClone.join("\n");
+        const sourceLines = SourceFile.lineNumbers(fileSplit, fileSplitClone);
+        let sourceFile: SourceFile | undefined;
 
         try {
-            fileData = yaml.loadAll(fileSplitClone.join("\n"), {schema}) as any[];
+            const events = yaml.parseEvents(source, {});
+            sourceFile = new SourceFile(filePath, source, sourceLines, events);
+            fileData = yaml.constructFromEvents(events, {source, schema}) as any[];
         } catch (e: any) {
+            if (e instanceof yaml.YAMLException && e.mark) {
+                withWhere(e, {location: {file: filePath, line: sourceLines[e.mark.line] ?? e.mark.line + 1, column: e.mark.column + 1, endColumn: e.mark.column + 2}});
+            }
             if (e instanceof PsychDisallowedClass) {
                 const configFilePath = path.relative(process.cwd(), filePath);
                 throw new AssertionError({message: chalk`This GitLab CI configuration is invalid: \`{blueBright ${configFilePath}}\`: ${e.message} ({blueBright ${e.source}}). Quote the value to keep it as text.`});
             }
             if (e instanceof yaml.YAMLException && e.reason === "duplicated mapping key") {
                 writeStreams?.stderr(chalk`{black.bgYellowBright  WARN } duplicated mapping key detected! Values will be overwritten!\n`);
-                fileData = yaml.loadAll(fileSplitClone.join("\n"), {schema, json: true}) as any[];
+                fileData = yaml.loadAll(source, {schema, json: true}) as any[];
             } else {
                 throw e;
             }
         }
 
+        recordSource(fileData[0], sourceFile);
         if (fileData.length <= 1) return fileData[0];
 
         if (isGitlabSpecFile(fileData[0])) {
@@ -419,7 +442,9 @@ export class Parser {
                     , (_: string, interpolationKey: string) => {
                         return getComponentValue(filePath, ctx, interpolationKey) || _;
                     });
-            return JSON.parse(interpolatedConfigurations);
+            const interpolated = JSON.parse(interpolatedConfigurations);
+            recordSource(interpolated, sourceFile);
+            return interpolated;
         }
         return fileData[0];
     }

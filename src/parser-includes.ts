@@ -13,6 +13,7 @@ import path from "node:path";
 import semver from "semver";
 import {RE2JS} from "re2js";
 import {globbySync} from "globby";
+import {withWhere} from "./source-map.js";
 
 type ParserIncludesInitOptions = {
     argv: Argv;
@@ -76,6 +77,20 @@ export class ParserIncludes {
     }
 
     static async init (gitlabData: any, opts: ParserIncludesInitOptions): Promise<any[]> {
+        // The include entry being read, so an error says which one it is about.
+        const at: {path?: (string | number)[]} = {};
+        try {
+            return await this.initIncludes(gitlabData, opts, at);
+        } catch (e) {
+            throw at.path ? withWhere(e, {data: gitlabData, path: at.path}) : e;
+        }
+    }
+
+    private static includePath (index: number, value: any): (string | number)[] {
+        return ["include", index, ["local", "project", "component", "template", "remote"].find(key => value[key]) ?? ""];
+    }
+
+    private static async initIncludes (gitlabData: any, opts: ParserIncludesInitOptions, at: {path?: (string | number)[]}): Promise<any[]> {
         const {argv, inputs: inputsConfig} = opts;
         const fileInputs = inputsConfig._file ?? {};
         const cliGlobalInputs = inputsConfig._cliGlobal ?? {};
@@ -90,6 +105,7 @@ export class ParserIncludes {
         );
         let includeDatas: any[] = [];
         const promises = [];
+        const promisePaths: (string | number)[][] = [];
         const {stateDir, cwd, fetchIncludes, gitData, expandVariables, writeStreams} = opts;
         // cache the parsed component, because parseIncludeComponent is expensive and we would call it twice otherwise
         const componentParseCache = new Map<number, ParsedComponent>();
@@ -99,6 +115,7 @@ export class ParserIncludes {
         this.normalizeTriggerInclude(gitlabData, opts);
         // Find files to fetch from remote and place in .gitlab-ci-local/includes
         for (const [index, value] of include.entries()) {
+            at.path = this.includePath(index, value);
             if (value["rules"]) {
                 const include_rules = value["rules"];
                 const rulesResult = getRulesResult({argv, cwd, rules: include_rules, variables: opts.variables}, gitData);
@@ -125,11 +142,15 @@ export class ParserIncludes {
                     componentParseCache.set(index, component);
                 })());
             }
+            while (promisePaths.length < promises.length) promisePaths.push(at.path);
         }
 
-        await Promise.all(promises);
+        await Promise.all(promises.map((promise, i) => promise.catch((e: unknown) => {
+            throw withWhere(e, {data: gitlabData, path: promisePaths[i]});
+        })));
 
         for (const [index, value] of include.entries()) {
+            at.path = this.includePath(index, value);
             if (value["rules"]) {
                 const include_rules = value["rules"];
                 const rulesResult = getRulesResult({argv, cwd, rules: include_rules, variables: opts.variables}, gitData);

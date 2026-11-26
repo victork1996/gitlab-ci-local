@@ -7,6 +7,10 @@ export interface ValidationError {
     message: string;
     path: string;
     schemaPath: string;
+    // JSON pointer of the value the error is about.
+    instancePath?: string;
+    // The error is about the key itself: a property that is not expected.
+    atKey?: boolean;
 }
 
 const QUOTES_REGEX = /"/g;
@@ -139,6 +143,7 @@ export const betterAjvErrors = ({
             }
         }
 
-        return validationError;
+        const unexpected = error.keyword === "additionalProperties" ? `/${String(error.params.additionalProperty).replaceAll("~", "~0").replaceAll("/", "~1")}` : "";
+        return {...validationError, instancePath: error.instancePath + unexpected, atKey: unexpected !== ""};
     });
 };

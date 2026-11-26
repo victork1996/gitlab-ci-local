@@ -1,0 +1,11 @@
+---
+include:
+  - local: ci/base.yml
+
+build-job:
+  stage: build
+  script: echo build
+
+# @Description inherits needs from .base
+test-job:
+  extends: .base

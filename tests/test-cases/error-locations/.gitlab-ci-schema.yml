@@ -1,0 +1,8 @@
+---
+test-job:
+  script: echo test
+  when: sometimes
+  artifacts:
+    reports:
+      junit: [a, b]
+      unknown_report: x

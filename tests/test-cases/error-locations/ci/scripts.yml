@@ -1,0 +1,5 @@
+---
+.scripts:
+  script:
+    - echo one
+    - !reference [.nowhere, script]

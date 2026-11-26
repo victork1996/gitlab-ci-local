@@ -28,6 +28,7 @@ import terminalLink from "terminal-link";
 import * as crypto from "node:crypto";
 import * as path from "node:path";
 import * as os from "node:os";
+import {configAssert} from "./source-map.js";
 import {
     POWERSHELL, UTF8_BOM, WINDOWS_BUILDS_DIR, WINDOWS_COPY_IN_DIR, WINDOWS_COPY_OUT_DIR, WINDOWS_FILE_VARIABLES_DIR, WINDOWS_SCRIPTS_DIR,
     containerEngineOs, copyMatchesCommand, engineMismatch, isWindowsContainerJob, powershellJobScript, psQuote, robocopyCommand, windowsProjectDir,
@@ -262,7 +263,7 @@ export class Job {
             this._variables = {...this._variables, GCL_PROJECT_DIR_ON_HOST: cwd};
         }
 
-        assert(this.scripts || this.trigger, chalk`{blueBright ${this.name}} must have script specified`);
+        configAssert(this.scripts || this.trigger, chalk`{blueBright ${this.name}} must have script specified`, {path: [this.baseName, "script"]});
 
         assert(!(this.interactive && !this.argv.shellExecutorNoImage), chalk`${this.formattedJobName} @Interactive decorator cannot be used with --no-shell-executor-no-image`);
 
@@ -277,18 +278,18 @@ export class Job {
         const expanded = expandVariables(this._variables);
         for (const [i, c] of Object.entries<any>(this.cache)) {
             c.policy = expandText(c.policy, expanded);
-            assert(["pull", "push", "pull-push"].includes(c.policy), chalk`{blue ${this.name}} cache[${i}].policy is not 'pull', 'push' or 'pull-push'`);
-            assert(["on_success", "on_failure", "always"].includes(c.when), chalk`{blue ${this.name}} cache[${i}].when is not 'on_success', 'on_failure' or 'always'`);
-            assert(Array.isArray(c.paths), chalk`{blue ${this.name}} cache[${i}].paths must be array`);
+            configAssert(["pull", "push", "pull-push"].includes(c.policy), chalk`{blue ${this.name}} cache[${i}].policy is not 'pull', 'push' or 'pull-push'`, {path: [this.baseName, "cache", i, "policy"]});
+            configAssert(["on_success", "on_failure", "always"].includes(c.when), chalk`{blue ${this.name}} cache[${i}].when is not 'on_success', 'on_failure' or 'always'`, {path: [this.baseName, "cache", i, "when"]});
+            configAssert(Array.isArray(c.paths), chalk`{blue ${this.name}} cache[${i}].paths must be array`, {path: [this.baseName, "cache", i, "paths"]});
         }
 
         for (const [i, s] of Object.entries<any>(this.services)) {
-            assert(s.name, chalk`{blue ${this.name}} services[${i}].name is undefined`);
-            assert(!s.command || Array.isArray(s.command), chalk`{blue ${this.name}} services[${i}].command must be an array`);
-            assert(!s.entrypoint || Array.isArray(s.entrypoint), chalk`{blue ${this.name}} services[${i}].entrypoint must be an array`);
+            configAssert(s.name, chalk`{blue ${this.name}} services[${i}].name is undefined`, {path: [this.baseName, "services", i, "name"]});
+            configAssert(!s.command || Array.isArray(s.command), chalk`{blue ${this.name}} services[${i}].command must be an array`, {path: [this.baseName, "services", i, "command"]});
+            configAssert(!s.entrypoint || Array.isArray(s.entrypoint), chalk`{blue ${this.name}} services[${i}].entrypoint must be an array`, {path: [this.baseName, "services", i, "entrypoint"]});
         }
 
-        assert(!this.artifacts?.paths || Array.isArray(this.artifacts.paths), chalk`{blue ${this.name}} artifacts.paths must be an array`);
+        configAssert(!this.artifacts?.paths || Array.isArray(this.artifacts.paths), chalk`{blue ${this.name}} artifacts.paths must be an array`, {path: [this.baseName, "artifacts", "paths"]});
 
         if (this.imageName(this._variables) && argv.mountCache) {
             for (const c of this.cache) {

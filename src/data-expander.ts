@@ -1,7 +1,8 @@
 import chalk from "chalk-template";
-import assert, {AssertionError} from "node:assert";
+import assert from "node:assert";
 import {Job, Need} from "./job.js";
 import {isObject} from "./object.js";
+import {ConfigError, configAssert} from "./source-map.js";
 
 const isMergeable = (value: any) => value != null && isObject(value) && value.referenceData == null;
 const extendsMerge = (target: any, source: any): any => {
@@ -14,7 +15,7 @@ const extendsMerge = (target: any, source: any): any => {
 
 const extendsMaxDepth = 11;
 const extendsRecurse = (gitlabData: any, jobName: string, jobData: any, parents: any[], depth: number) => {
-    assert(depth < extendsMaxDepth, chalk`{blueBright ${jobName}}: circular dependency detected in \`extends\``);
+    configAssert(depth < extendsMaxDepth, chalk`{blueBright ${jobName}}: circular dependency detected in \`extends\``, {path: [jobName, "extends"]});
     depth++;
 
     jobData.extends = typeof jobData.extends === "string" ? [jobData.extends] : jobData.extends;
@@ -22,7 +23,7 @@ const extendsRecurse = (gitlabData: any, jobName: string, jobData: any, parents:
 
     for (const parentName of jobData.extends) {
         const parentData = gitlabData[parentName];
-        assert(parentData != null, chalk`{blueBright ${parentName}} is unspecified, used by {blueBright ${jobName}} extends`);
+        configAssert(parentData != null, chalk`{blueBright ${parentName}} is unspecified, used by {blueBright ${jobName}} extends`, {path: [jobName, "extends", jobData.extends.indexOf(parentName)]});
         extendsRecurse(gitlabData, parentName, parentData, parents, depth);
         parents.push(parentData);
     }
@@ -58,7 +59,7 @@ export function reference (gitlabData: any, recurseData: any) {
         }
 
         if (hasCircularChain(recurseData)) {
-            throw new AssertionError({message: `!reference circular chain detected [${value.referenceData}]`});
+            throw new ConfigError(`!reference circular chain detected [${value.referenceData}]`, {reference: value.referenceData ?? []});
         }
     }
 }
@@ -66,7 +67,7 @@ export function reference (gitlabData: any, recurseData: any) {
 const getSubDataByReference = (gitlabData: any, referenceData: string[]) => {
     let gitlabSubData = gitlabData;
     referenceData.forEach((referencePointer) => {
-        assert(gitlabSubData[referencePointer] != null, `!reference [${referenceData.join(", ")}] is undefined`);
+        configAssert(gitlabSubData[referencePointer] != null, `!reference [${referenceData.join(", ")}] is undefined`, {reference: referenceData});
         gitlabSubData = gitlabSubData[referencePointer];
     });
     return gitlabSubData;
@@ -136,7 +137,7 @@ export function needsComplex (data: any) {
 export function needsEach (jobName: string, gitlabData: any) {
     const jobData = gitlabData[jobName];
     if (!jobData.needs) return;
-    assert(Array.isArray(jobData.needs), chalk`{blueBright ${jobName}} {yellow needs:} must be an array`);
+    configAssert(Array.isArray(jobData.needs), chalk`{blueBright ${jobName}} {yellow needs:} must be an array`, {path: [jobName, "needs"]});
 
     // GitLab silently drops empty entries, e.g. from an anchor holding an empty list item
     jobData.needs = jobData.needs.filter((n: any) => n != null).map(needsComplex);

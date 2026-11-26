@@ -1,0 +1,8 @@
+---
+include:
+  - local: ci/base.yml
+  - local: ci/absent.yml   # not there
+
+build-job:
+  stage: build
+  script: echo build

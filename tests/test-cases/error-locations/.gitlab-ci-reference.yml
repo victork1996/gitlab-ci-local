@@ -1,0 +1,9 @@
+---
+include: ci/scripts.yml
+
+build-job:
+  stage: build
+  script: echo build
+
+test-job:
+  extends: [.scripts]

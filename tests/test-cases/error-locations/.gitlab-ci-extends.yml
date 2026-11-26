@@ -1,0 +1,10 @@
+---
+# @Description adds a line to what is parsed
+build-job:
+  stage: build
+  script: echo build
+
+test-job:
+  extends:
+    - build-job
+    - .unknown

@@ -14,6 +14,7 @@ import {Job, cleanupJobResources} from "./job.js";
 import {GitlabRunnerPresetValues} from "./gitlab-preset.js";
 import packageJson from "../package.json";
 import http from "node:http";
+import {formatLocation} from "./source-map.js";
 
 http.setGlobalProxyFromEnv?.();
 
@@ -60,6 +61,10 @@ process.on("SIGUSR2", async () => {
                         e.errors.forEach((aggE) => process.stderr.write(chalk`{red ${aggE.stack ?? aggE}}\n`));
                     } else {
                         process.stderr.write(chalk`{red ${e.stack ?? e}}\n`);
+                    }
+                    // Where in the pipeline files the error is, when the parser knows.
+                    for (const {location, about} of e?.location ? [{location: e.location, about: undefined}] : e?.locations ?? []) {
+                        process.stderr.write(chalk`{red ${"  " + formatLocation(location, about)}}\n`);
                     }
                     await cleanupAndExit(1);
                 }
