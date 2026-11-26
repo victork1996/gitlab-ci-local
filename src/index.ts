@@ -263,6 +263,32 @@ process.on("SIGUSR2", async () => {
             description: "Enable docker mount based caching",
             requiresArg: false,
         })
+        .option("workspace-mount", {
+            type: "string",
+            choices: ["copy", "bind", "overlay"],
+            description: "Who fills a container job's build volume: copy (the runner copies the checkout into it), bind or overlay (the container executable mounts the checkout, or an overlay of it, in its place)",
+            requiresArg: false,
+        })
+        .option("container-hook", {
+            type: "string",
+            description: "Module (path or URL) whose runDockerCall(args, {cwd, run}) handles each call to the container executable instead of a new process",
+            requiresArg: false,
+        })
+        .option("shell-isolation-hook", {
+            type: "string",
+            description: "Module (path or URL) whose prepareShellWorkspace(cwd, stateDir, jobFolder) prepares --shell-isolation's job folder instead of the rsync copy",
+            requiresArg: false,
+        })
+        .option("shell-artifacts-in-cwd", {
+            type: "boolean",
+            description: "Copy the artifacts a shell job needs into cwd before it starts, when it runs there (no --shell-isolation): for producers run with --artifacts-to-source=false",
+            requiresArg: false,
+        })
+        .option("preparation-steps", {
+            type: "boolean",
+            description: "Say when each preparation step starts (pulling an image, copying the checkout, starting a service...)",
+            requiresArg: false,
+        })
         .option("umask", {
             type: "boolean",
             description: "Sets docker user to 0:0",

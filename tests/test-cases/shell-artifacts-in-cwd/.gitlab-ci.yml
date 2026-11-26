@@ -1,0 +1,13 @@
+---
+produce:
+  stage: build
+  script:
+    - echo produced
+  artifacts:
+    paths: [out/]
+
+consume:
+  stage: test
+  needs: [produce]
+  script:
+    - cat out/file.txt

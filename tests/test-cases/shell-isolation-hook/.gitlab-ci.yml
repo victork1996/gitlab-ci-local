@@ -1,0 +1,6 @@
+---
+job:
+  script:
+    - echo made > made-by-script.txt
+  after_script:
+    - cat made-by-script.txt

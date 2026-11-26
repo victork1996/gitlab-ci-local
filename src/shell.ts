@@ -1,4 +1,5 @@
 import {execa, execaSync} from "execa";
+import {loadHook} from "./hooks.js";
 
 export class Shell {
     static bashMulti (scripts: string[], cwd = process.cwd()): Promise<{stdout: string; stderr: string; exitCode?: number}> {
@@ -20,7 +21,23 @@ export class Shell {
         };
     }
 
-    static spawn (cmdArgs: string[], cwd = process.cwd()): Promise<{stdout: string; stderr: string}> {
+    private static containerHook: {executable: string; module: string} | null = null;
+
+    /**
+     * Sends spawned calls to the container executable to a --container-hook module's runDockerCall(args, {cwd, run})
+     * instead of starting the executable: a wrapper script started for each call can be slow (one started through
+     * Electron takes up to a second). run(file, args, {cwd}) starts a process, for the hook to call the real engine.
+     */
+    static useContainerHook (executable: string, module: string | null) {
+        Shell.containerHook = module ? {executable, module} : null;
+    }
+
+    static async spawn (cmdArgs: string[], cwd = process.cwd()): Promise<{stdout: string; stderr: string}> {
+        const hook = Shell.containerHook;
+        if (hook && cmdArgs[0] === hook.executable) {
+            const {runDockerCall} = await loadHook(hook.module);
+            return runDockerCall(cmdArgs.slice(1), {cwd, run: (file: string, args: string[], options: {cwd?: string}) => execa(file, args, options)});
+        }
         return execa(cmdArgs[0], cmdArgs.slice(1), {cwd});
     }
 

@@ -394,6 +394,33 @@ export class Argv {
         return this.map.get("fetchIncludes") ?? false;
     }
 
+    /**
+     * Who fills a container job's build volume. copy: the runner copies the checkout into it. bind and overlay:
+     * the container executable (a wrapper, or --container-hook) mounts the checkout, or a private overlay of it,
+     * in the volume's place, so the runner prepares no copy of it.
+     */
+    get workspaceMount (): "copy" | "bind" | "overlay" {
+        const mount = this.map.get("workspaceMount") ?? "copy";
+        assert(["copy", "bind", "overlay"].includes(mount), "--workspace-mount must be copy, bind or overlay");
+        return mount;
+    }
+
+    get containerHook (): string | null {
+        return this.map.get("containerHook") ?? null;
+    }
+
+    get shellIsolationHook (): string | null {
+        return this.map.get("shellIsolationHook") ?? null;
+    }
+
+    get shellArtifactsInCwd (): boolean {
+        return this.map.get("shellArtifactsInCwd") ?? false;
+    }
+
+    get preparationSteps (): boolean {
+        return this.map.get("preparationSteps") ?? false;
+    }
+
     get mountCache (): boolean {
         return this.map.get("mountCache") ?? false;
     }

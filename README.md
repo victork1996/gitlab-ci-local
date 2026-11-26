@@ -46,6 +46,7 @@ Get rid of all those dev specific shell scripts and make files.
     * [Includes](#includes)
     * [Artifacts](#artifacts)
     * [Windows containers](#windows-containers)
+    * [Embedding](#embedding)
     * [Self Hosted Custom Ports](#self-hosted-custom-ports)
 * [Development](#development)
     * [Scripts](#scripts)
@@ -433,6 +434,19 @@ build:
 - Artifacts, cache, `needs`, dotenv reports and services work as for Linux jobs. Files are copied with the job's own image (robocopy and PowerShell) instead of the Linux helper image. Service health checks are skipped, because the wait-for-it image is a Linux image.
 - Docker must be running Windows containers (on Docker Desktop: *Switch to Windows containers...*). A Windows job on a Linux engine, or a Linux job on a Windows engine, fails before it starts with a message saying so. Docker Desktop runs one engine at a time, so a pipeline with both kinds of jobs has to be run in two parts.
 - `--privileged`, `--device`, `--ulimit`, `--userns`, `--shm-size`, `--gpus`, `--ca-file`, `--seccomp` and SSH agent injection are Linux-only and are not applied to Windows jobs.
+
+### Embedding
+
+Options for a program that runs gitlab-ci-local for its users and mounts job workspaces itself:
+
+- `--container-hook <module>` sends each call to the container executable to the module's `runDockerCall(args, {cwd, run})` in the runner's own process, instead of starting a new process. `run(file, args, {cwd})` starts one, for the hook to call the real engine.
+- `--workspace-mount copy|bind|overlay` says who fills a container job's build volume. `copy` (the default) copies the checkout into it. With `bind` or `overlay` the container executable mounts the checkout, or a private overlay of it, in the volume's place. When jobs run as root (`--umask`) the runner then skips its volume helper and sets `GITLAB_CI_LOCAL_BIND_FILE_VARIABLES=1`, so the executable binds the file variables folder in the tmp volume's place. `bind` creates neither volume, and `overlay` stages no copy of the checkout in `builds/.docker`.
+- `--shell-isolation-hook <module>` prepares each `--shell-isolation` job folder with the module's `prepareShellWorkspace(cwd, stateDir, jobFolder)` instead of the rsync copy. The after_script keeps the folder its script ran in.
+- `--shell-artifacts-in-cwd` copies the artifacts a shell job needs into cwd before it starts, when it runs there (without `--shell-isolation`) and its producers ran with `--no-artifacts-to-source`.
+- `--preparation-steps` says when each preparation step starts, such as `pulling alpine:3`, `copying checkout`, `creating container` or `starting service postgres`, not only when it ends.
+- `--image-os image=os` gives an image's container OS (`linux` or `windows`), read from the image, instead of guessing it from its name.
+
+A module is a path or a URL (`file:`, `data:`).
 
 ### Self Hosted Custom Ports
 

@@ -12,6 +12,7 @@ import {prettyHrtime} from "./pretty-hrtime.js";
 import {rsyncTrackedFiles} from "./rsync-tracked-files.js";
 import {startDockerRegistry, stopDockerRegistry} from "./docker-registry.js";
 import {Argv} from "./argv.js";
+import {Shell} from "./shell.js";
 import assert from "node:assert";
 
 const generateGitIgnore = (cwd: string, stateDir: string) => {
@@ -22,6 +23,13 @@ const generateGitIgnore = (cwd: string, stateDir: string) => {
     }
 };
 
+// Container jobs copy the checkout from builds/.docker into their build volume. An overlay takes the
+// checkout itself as its lower layer, so nothing is staged for it.
+async function stageCheckout (argv: Argv) {
+    if (argv.workspaceMount === "overlay") return;
+    await rsyncTrackedFiles(argv.cwd, argv.stateDir, path.resolve(argv.cwd, argv.ignoresFile), ".docker");
+}
+
 export async function handler (args: any, writeStreams: WriteStreams, jobs: Job[] = [], childPipelineDepth = 0) {
     assert(childPipelineDepth <= 2, "Parent and child pipelines have a maximum depth of two levels of child pipelines.");
     const argv = await Argv.build({...args, childPipelineDepth: childPipelineDepth}, writeStreams);
@@ -29,6 +37,7 @@ export async function handler (args: any, writeStreams: WriteStreams, jobs: Job[
     const stateDir = argv.stateDir;
     const file = argv.file;
     let parser: Parser;
+    Shell.useContainerHook(argv.containerExecutable, argv.containerHook);
 
     if (argv.completion) {
         yargs(process.argv.slice(2)).scriptName("gitlab-ci-local").showCompletionScript();
@@ -83,7 +92,7 @@ export async function handler (args: any, writeStreams: WriteStreams, jobs: Job[
             pipelineIid = await state.getPipelineIid(cwd, stateDir);
         }
         parser = await Parser.create(argv, writeStreams, pipelineIid, jobs);
-        await rsyncTrackedFiles(cwd, stateDir, path.resolve(cwd, argv.ignoresFile), ".docker");
+        await stageCheckout(argv);
         await Commander.runJobs(argv, parser, writeStreams);
         if (argv.needs || argv.onlyNeeds) {
             writeStreams.stderr(chalk`{grey pipeline finished} in {grey ${prettyHrtime(process.hrtime(time))}}\n`);
@@ -95,7 +104,7 @@ export async function handler (args: any, writeStreams: WriteStreams, jobs: Job[
         const time = process.hrtime();
         const pipelineIid = await state.getPipelineIid(cwd, stateDir);
         parser = await Parser.create(argv, writeStreams, pipelineIid, jobs);
-        await rsyncTrackedFiles(cwd, stateDir, path.resolve(cwd, argv.ignoresFile), ".docker");
+        await stageCheckout(argv);
         await Commander.runJobsInStage(argv, parser, writeStreams);
         writeStreams.stderr(chalk`{grey pipeline finished} in {grey ${prettyHrtime(process.hrtime(time))}}\n`);
     } else {
@@ -105,7 +114,7 @@ export async function handler (args: any, writeStreams: WriteStreams, jobs: Job[
         const time = process.hrtime();
         const pipelineIid = await state.incrementPipelineIid(cwd, stateDir);
         parser = await Parser.create(argv, writeStreams, pipelineIid, jobs);
-        await rsyncTrackedFiles(cwd, stateDir, path.resolve(cwd, argv.ignoresFile), ".docker");
+        await stageCheckout(argv);
         await Commander.runPipeline(argv, parser, writeStreams);
         if (childPipelineDepth == 0) writeStreams.stderr(chalk`{grey pipeline finished} in {grey ${prettyHrtime(process.hrtime(time))}}\n`);
     }

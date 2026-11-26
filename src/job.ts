@@ -10,6 +10,7 @@ import {expandText, expandVariables} from "./expand.js";
 import {getRulesResult} from "./rules.js";
 import {prettyHrtime} from "./pretty-hrtime.js";
 import {rsyncTrackedFiles} from "./rsync-tracked-files.js";
+import {loadHook} from "./hooks.js";
 import {gclRegistryPrefix} from "./docker-registry.js";
 import {WriteStreams} from "./write-streams.js";
 import {GitData} from "./git-data.js";
@@ -35,6 +36,12 @@ import {
 } from "./windows-container.js";
 
 const GCL_SHELL_PROMPT_PLACEHOLDER = "<gclShellPromptPlaceholder>";
+/**
+ * Set for the container executable once a job skipped its volume helper (--workspace-mount bind or overlay, with
+ * --umask): nothing copied the job's file variables into its tmp volume, so the executable binds the folder the runner
+ * wrote them to (fileVariablesDir) in that volume's place.
+ */
+export const BIND_FILE_VARIABLES_ENV = "GITLAB_CI_LOCAL_BIND_FILE_VARIABLES";
 interface JobOptions {
     argv: Argv;
     writeStreams: WriteStreams;
@@ -677,6 +684,35 @@ If you know what you're doing and would like to suppress this warning, use one o
         return `/tmp/${name}`;
     }
 
+    /**
+     * With --preparation-steps, says when a preparation step starts ("pulling alpine:3"): the runner otherwise
+     * reports a step only once it is over, so a job waiting on one looks idle.
+     */
+    private announceStep (text: string) {
+        if (this.argv.preparationSteps) this.writeStreams.stdout(chalk`${this.formattedJobName} {magentaBright ${text}}\n`);
+    }
+
+    private get checkoutStep () {
+        return this.argv.workspaceMount === "copy" ? "copying checkout" : "preparing volumes";
+    }
+
+    private get containerStep () {
+        return this.argv.workspaceMount === "overlay" ? "creating overlay" : "creating container";
+    }
+
+    private get volumesPreparedMessage () {
+        return this.argv.workspaceMount === "copy" ? `copied to ${this.argv.containerExecutable} volumes` : "prepared job volumes";
+    }
+
+    /**
+     * Whether the container executable binds the job's file variables folder in its tmp volume's place, so no helper
+     * container prepares the volumes: when it mounts the checkout (--workspace-mount) and the job runs as root
+     * (--umask). The runner then sets BIND_FILE_VARIABLES_ENV for it.
+     */
+    private get bindsFileVariables () {
+        return this.argv.workspaceMount !== "copy" && this.argv.umask;
+    }
+
     /** Whether the job runs in a Windows container (see windows-container.ts). */
     get windowsContainer (): boolean {
         const image = this.jobData["image"];
@@ -750,13 +786,18 @@ If you know what you're doing and would like to suppress this warning, use one o
 
             const buildVolumeName = this.buildVolumeName;
             const tmpVolumeName = this.tmpVolumeName;
-            const fileVariablesDir = this.fileVariablesDir;
 
-            this._containerVolumeNames.push(buildVolumeName, tmpVolumeName);
-            const volumeCreatePromises = [
-                Shell.spawn([this.argv.containerExecutable, "volume", "create", `${buildVolumeName}`], argv.cwd),
-                Shell.spawn([this.argv.containerExecutable, "volume", "create", `${tmpVolumeName}`], argv.cwd),
-            ];
+            this.announceStep(this.checkoutStep);
+            // A bound checkout takes the build volume's place, and its file variables folder the tmp volume's
+            // (see bindsFileVariables), so neither volume is created.
+            const volumeCreatePromises: Promise<unknown>[] = [];
+            if (this.argv.workspaceMount !== "bind" || !this.argv.umask) {
+                this._containerVolumeNames.push(buildVolumeName, tmpVolumeName);
+                volumeCreatePromises.push(
+                    Shell.spawn([this.argv.containerExecutable, "volume", "create", `${buildVolumeName}`], argv.cwd),
+                    Shell.spawn([this.argv.containerExecutable, "volume", "create", `${tmpVolumeName}`], argv.cwd),
+                );
+            }
             if (this.argv.volume.some(v => v.startsWith("%gcl-cert%:"))) {
                 this._containerVolumeNames.push(this.certVolumeName);
                 volumeCreatePromises.push(Shell.spawn([this.argv.containerExecutable, "volume", "create", this.certVolumeName], argv.cwd));
@@ -775,36 +816,15 @@ If you know what you're doing and would like to suppress this warning, use one o
                     chmodOpt = "g-w";
                 }
             }
-            if (helperImageName) {
-                await this.pullImage(writeStreams, helperImageName);
+            if (this.bindsFileVariables) {
+                // Nothing to chown or copy: the job runs as root, and the container executable mounts the checkout
+                // in the build volume's place and binds the file variables folder in the tmp volume's.
+                process.env[BIND_FILE_VARIABLES_ENV] = "1";
+            } else {
+                await this.prepareVolumesWithHelper(writeStreams, helperImageName, chownOpt, chmodOpt);
             }
-
-            const helperContainerArgs = [
-                this.argv.containerExecutable, "create", "--user=0:0",
-                `--volume=${buildVolumeName}:${this.ciProjectDir}`,
-                `--volume=${tmpVolumeName}:${this.fileVariablesDir}`,
-            ];
-
-            if (this.argv.caFile) {
-                const caFilePath = path.isAbsolute(this.argv.caFile) ? this.argv.caFile : path.resolve(this.argv.cwd, this.argv.caFile);
-                if (await fs.pathExists(caFilePath)) {
-                    helperContainerArgs.push(`--volume=${caFilePath}:/etc/ssl/certs/ca-certificates.crt:ro`);
-                }
-            }
-
-            helperContainerArgs.push(`${helperImageName}`, "sh", "-c", `chown ${chownOpt} -R ${this.ciProjectDir} && chmod ${chmodOpt} -R ${this.ciProjectDir} && chown ${chownOpt} -R /tmp/ && chmod ${chmodOpt} -R /tmp/`);
-
-            const {stdout: containerId} = await Shell.spawn(helperContainerArgs, argv.cwd);
-            this._containersToClean.push(containerId);
-            if (await fs.pathExists(fileVariablesDir)) {
-                await Shell.spawn([this.argv.containerExecutable, "cp", `${fileVariablesDir}/.`, `${containerId}:${fileVariablesDir}`], argv.cwd);
-                this.refreshLongRunningSilentTimeout(writeStreams);
-            }
-            await Shell.spawn([this.argv.containerExecutable, "cp", `${argv.stateDir}/builds/.docker/.`, `${containerId}:${this.ciProjectDir}`], argv.cwd);
-            await Shell.spawn([this.argv.containerExecutable, "start", "--attach", containerId], argv.cwd);
-            await Shell.spawn([this.argv.containerExecutable, "rm", "-vf", containerId], argv.cwd);
             const endTime = process.hrtime(time);
-            writeStreams.stdout(chalk`${this.formattedJobName} {magentaBright copied to ${this.argv.containerExecutable} volumes} in {magenta ${prettyHrtime(endTime)}}\n`);
+            writeStreams.stdout(chalk`${this.formattedJobName} {magentaBright ${this.volumesPreparedMessage}} in {magenta ${prettyHrtime(endTime)}}\n`);
         }
 
         if (this.services?.length) {
@@ -852,18 +872,56 @@ If you know what you're doing and would like to suppress this warning, use one o
         }
     }
 
+    // A helper container chowns the build and tmp volumes for the job's user and copies the checkout and the file
+    // variables into them.
+    private async prepareVolumesWithHelper (writeStreams: WriteStreams, helperImageName: string, chownOpt: string, chmodOpt: string) {
+        const argv = this.argv;
+        const buildVolumeName = this.buildVolumeName;
+        const tmpVolumeName = this.tmpVolumeName;
+        const fileVariablesDir = this.fileVariablesDir;
+        if (helperImageName) {
+            await this.pullImage(writeStreams, helperImageName);
+        }
+
+        const helperContainerArgs = [
+            this.argv.containerExecutable, "create", "--user=0:0",
+            `--volume=${buildVolumeName}:${this.ciProjectDir}`,
+            `--volume=${tmpVolumeName}:${this.fileVariablesDir}`,
+        ];
+
+        if (this.argv.caFile) {
+            const caFilePath = path.isAbsolute(this.argv.caFile) ? this.argv.caFile : path.resolve(this.argv.cwd, this.argv.caFile);
+            if (await fs.pathExists(caFilePath)) {
+                helperContainerArgs.push(`--volume=${caFilePath}:/etc/ssl/certs/ca-certificates.crt:ro`);
+            }
+        }
+
+        helperContainerArgs.push(`${helperImageName}`, "sh", "-c", `chown ${chownOpt} -R ${this.ciProjectDir} && chmod ${chmodOpt} -R ${this.ciProjectDir} && chown ${chownOpt} -R /tmp/ && chmod ${chmodOpt} -R /tmp/`);
+
+        const {stdout: containerId} = await Shell.spawn(helperContainerArgs, argv.cwd);
+        this._containersToClean.push(containerId);
+        if (await fs.pathExists(fileVariablesDir)) {
+            await Shell.spawn([this.argv.containerExecutable, "cp", `${fileVariablesDir}/.`, `${containerId}:${fileVariablesDir}`], argv.cwd);
+            this.refreshLongRunningSilentTimeout(writeStreams);
+        }
+        await Shell.spawn([this.argv.containerExecutable, "cp", `${argv.stateDir}/builds/.docker/.`, `${containerId}:${this.ciProjectDir}`], argv.cwd);
+        await Shell.spawn([this.argv.containerExecutable, "start", "--attach", containerId], argv.cwd);
+        await Shell.spawn([this.argv.containerExecutable, "rm", "-vf", containerId], argv.cwd);
+    }
+
     // Windows containers have no Linux helper image: the job's own image (which has PowerShell, as
     // GitLab's docker-windows executor requires) moves files between the host and the build volume,
     // through read-only bind mounts and robocopy, instead of chown/rsync in a helper container.
     private async prepareWindowsContainer (writeStreams: WriteStreams, imageName: string) {
         const argv = this.argv;
+        this.announceStep(this.checkoutStep);
         this._windowsImage = imageName;
         this._containerVolumeNames.push(this.buildVolumeName);
         await Shell.spawn([argv.containerExecutable, "volume", "create", this.buildVolumeName], argv.cwd);
         const time = process.hrtime();
         this.refreshLongRunningSilentTimeout(writeStreams);
         await this.copyInWindows(path.resolve(argv.cwd, argv.stateDir, "builds", ".docker"));
-        writeStreams.stdout(chalk`${this.formattedJobName} {magentaBright copied to ${argv.containerExecutable} volumes} in {magenta ${prettyHrtime(process.hrtime(time))}}\n`);
+        writeStreams.stdout(chalk`${this.formattedJobName} {magentaBright ${this.volumesPreparedMessage}} in {magenta ${prettyHrtime(process.hrtime(time))}}\n`);
     }
 
     private _windowsImage: string | null = null;
@@ -902,6 +960,7 @@ If you know what you're doing and would like to suppress this warning, use one o
     /** Creates the Windows job container; it runs the job's current PowerShell script on each start. */
     private async createWindowsContainer (expanded: {[key: string]: string}, imageName: string, scriptName: string) {
         const argv = this.argv;
+        this.announceStep(this.containerStep);
         const cwd = argv.cwd;
         const args = [argv.containerExecutable, "create"];
         const imageUser = this.imageUser(expanded);
@@ -1068,9 +1127,17 @@ If you know what you're doing and would like to suppress this warning, use one o
 
         await fs.remove(`${cwd}/${stateDir}/artifacts/${safeJobName}`);
 
-        // Copy git tracked files to build folder if shell isolation enabled.
-        if (!imageName && this.argv.shellIsolation) {
-            await rsyncTrackedFiles(cwd, stateDir, path.resolve(cwd, this.argv.ignoresFile), `${safeJobName}`);
+        // Copy git tracked files to build folder if shell isolation enabled. A --shell-isolation-hook workspace is
+        // new each time it is prepared, so the after_script (the call with a message) keeps the script's.
+        const workspaceHook = this.argv.shellIsolationHook;
+        if (!imageName && this.argv.shellIsolation && !(workspaceHook && message.length > 0)) {
+            if (workspaceHook) {
+                this.announceStep("creating overlay");
+                await (await loadHook(workspaceHook)).prepareShellWorkspace(cwd, stateDir, safeJobName);
+            } else {
+                this.announceStep("copying checkout");
+                await rsyncTrackedFiles(cwd, stateDir, path.resolve(cwd, this.argv.ignoresFile), `${safeJobName}`);
+            }
         }
 
         if (this.interactive) {
@@ -1106,6 +1173,7 @@ If you know what you're doing and would like to suppress this warning, use one o
         }
 
         if (imageName && !this._containerId) {
+            this.announceStep(this.containerStep);
             let dockerCmd = `${this.argv.containerExecutable} create --interactive ${this.generateInjectSSHAgentOptions()} `;
             if (this.argv.privileged) {
                 dockerCmd += "--privileged ";
@@ -1269,6 +1337,8 @@ If you know what you're doing and would like to suppress this warning, use one o
 
         await this.copyCacheIn(writeStreams, expanded);
         await this.copyArtifactsIn(writeStreams);
+        // The job's container starts now; a Windows one takes seconds.
+        if (this._containerId) this.announceStep("starting container");
 
         if (windows) {
             const windowsScript = powershellJobScript(scripts, {projectDir: this.ciProjectDir, promptPlaceholder: GCL_SHELL_PROMPT_PLACEHOLDER, jobStatus: expanded["CI_JOB_STATUS"]});
@@ -1468,6 +1538,7 @@ If you know what you're doing and would like to suppress this warning, use one o
         const platformSuffix = imagePlatform ? ` (${imagePlatform})` : "";
         const actualPull = async () => {
             await this.validateCiDependencyProxyServerAuthentication(imageToPull);
+            this.announceStep(`pulling ${imageToPull}`);
             const time = process.hrtime();
             await Shell.spawn([this.argv.containerExecutable, "pull", imageToPull, ...platformArgs]);
             const endTime = process.hrtime(time);
@@ -1535,6 +1606,7 @@ If you know what you're doing and would like to suppress this warning, use one o
             }
 
             await Mutex.exclusive(cacheName, async () => {
+                this.announceStep("importing cache");
                 await this.copyIn(cacheFolder);
             });
             const endTime = process.hrtime(time);
@@ -1543,7 +1615,12 @@ If you know what you're doing and would like to suppress this warning, use one o
     }
 
     private async copyArtifactsIn (writeStreams: WriteStreams) {
+        if (!this.imageName(this._variables) && !this.argv.shellIsolation && this.argv.shellArtifactsInCwd) {
+            await this.copyArtifactsInCwd(writeStreams);
+            return;
+        }
         if ((!this.imageName(this._variables) && !this.argv.shellIsolation) || (this.producers ?? []).length === 0) return;
+        this.announceStep("importing artifacts");
 
         const cwd = this.argv.cwd;
         const stateDir = this.argv.stateDir;
@@ -1564,6 +1641,24 @@ If you know what you're doing and would like to suppress this warning, use one o
         }));
         const endTime = process.hrtime(time);
         writeStreams.stdout(chalk`${this.formattedJobName} {magentaBright imported artifacts} in {magenta ${prettyHrtime(endTime)}}\n`);
+    }
+
+    // With --shell-artifacts-in-cwd, a shell job running in cwd gets its producers' artifacts copied into cwd, one
+    // producer after another, as a container job gets them in its build folder: for runs whose producers kept
+    // them out of cwd (--artifacts-to-source=false).
+    private async copyArtifactsInCwd (writeStreams: WriteStreams) {
+        const producers = this.producers ?? [];
+        if (producers.length === 0) return;
+        const {cwd, stateDir} = this.argv;
+        this.announceStep("importing artifacts");
+        const time = process.hrtime();
+        await producers.reduce(async (previous, producer) => {
+            await previous;
+            const artifactFolder = `${stateDir}/artifacts/${safeDockerString(producer.name)}`;
+            if (!await fs.pathExists(`${cwd}/${artifactFolder}`)) return;
+            await Shell.spawn(["rsync", "-a", "--exclude=/.gitlab-ci-reports/", "--exclude=/.git/", `--exclude=/${stateDir}/`, `${artifactFolder}/.`, "./"], cwd);
+        }, Promise.resolve());
+        writeStreams.stdout(chalk`${this.formattedJobName} {magentaBright imported artifacts} in {magenta ${prettyHrtime(process.hrtime(time))}}\n`);
     }
 
     copyIn (source: string) {
@@ -1812,6 +1907,7 @@ If you know what you're doing and would like to suppress this warning, use one o
     }
 
     private async startService (writeStreams: WriteStreams, expanded: {[key: string]: string}, service: Service) {
+        this.announceStep(`starting service ${service.name}`);
         const cwd = this.argv.cwd;
         let dockerCmd = `${this.argv.containerExecutable} create --interactive `;
         this.refreshLongRunningSilentTimeout(writeStreams);
@@ -1929,6 +2025,7 @@ If you know what you're doing and would like to suppress this warning, use one o
     }
 
     private async serviceHealthCheck (writeStreams: WriteStreams, service: Service, serviceIndex: number, serviceContainerLogFile: string) {
+        this.announceStep(`waiting for service ${service.name}`);
         const serviceAlias = getServiceAlias(service);
         const serviceName = service.name;
         const waitImageName = this.argv.waitImage;

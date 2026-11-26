@@ -1,0 +1,5 @@
+---
+build:
+  image: docker.io/library/alpine:3
+  script:
+    - echo built
