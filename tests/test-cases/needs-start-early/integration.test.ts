@@ -15,7 +15,7 @@ test("needs-start-early: a job starts once its needs finish, not once its wave d
     }, writeStreams);
 
     const lineOf = (text: string) => writeStreams.stdoutLines.findIndex((line) => line.includes(text));
-    expect(lineOf("next done")).toBeGreaterThan(-1);
+    expect(lineOf("next read from fast-job")).toBeGreaterThan(-1);
     expect(lineOf("slow done")).toBeGreaterThan(-1);
-    expect(lineOf("next done")).toBeLessThan(lineOf("slow done"));
+    expect(lineOf("next read from fast-job")).toBeLessThan(lineOf("slow done"));
 });

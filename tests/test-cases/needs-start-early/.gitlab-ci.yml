@@ -1,6 +1,6 @@
 ---
-# needs-next waits only for fast-job: it starts as soon as fast-job finishes, while slow-job, which started
-# alongside fast-job, is still running.
+# needs-next waits only for fast-job: it starts as soon as fast-job finishes, artifacts included, while slow-job,
+# which started alongside fast-job, is still running.
 slow-job:
   needs: []
   script:
@@ -10,9 +10,12 @@ slow-job:
 fast-job:
   needs: []
   script:
+    - mkdir -p out && echo "from fast-job" > out/fast.txt
     - echo "fast done"
+  artifacts:
+    paths: [out/]
 
 needs-next:
   needs: [fast-job]
   script:
-    - echo "next done"
+    - echo "next read $(cat out/fast.txt)"

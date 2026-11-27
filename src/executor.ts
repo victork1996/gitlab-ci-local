@@ -19,18 +19,25 @@ export class Executor {
         const limit = argv.concurrency ?? Infinity;
         // A trigger job counts as started only once it has done its work, so launched jobs are kept here too.
         const launched = new Set<Job>();
+        // Jobs whose start() has not returned. A job reports itself finished once its scripts end, before it copies
+        // its cache and artifacts out, so the jobs that need it wait for start() instead.
+        const inFlight = new Set<Job>();
         const running = new Set<Promise<void>>();
         let failure: {error: unknown} | null = null;
         for (;;) {
-            for (const job of Executor.getStartCandidates(jobs, stages, potentialStarters, manuals)) {
+            for (const job of Executor.getStartCandidates(jobs, stages, potentialStarters, manuals, inFlight)) {
                 if (running.size >= limit) break;
                 if (launched.has(job)) continue;
                 launched.add(job);
+                inFlight.add(job);
                 const run: Promise<void> = job.start()
                     .catch((error: unknown) => {
                         failure ??= {error};
                     })
-                    .finally(() => running.delete(run));
+                    .finally(() => {
+                        inFlight.delete(job);
+                        running.delete(run);
+                    });
                 running.add(run);
             }
             if (running.size === 0) return;
@@ -40,8 +47,9 @@ export class Executor {
         }
     }
 
-    static getStartCandidates (jobs: ReadonlyArray<Job>, stages: readonly string[], potentialStarters: readonly Job[], manuals: string[]) {
-        const states = new Map<Job, JobState>();
+    /** `inFlight`: jobs still running, whatever they report (see runLoop). */
+    static getStartCandidates (jobs: ReadonlyArray<Job>, stages: readonly string[], potentialStarters: readonly Job[], manuals: string[], inFlight: ReadonlySet<Job> = new Set()) {
+        const states = new Map<Job, JobState>([...inFlight].map((job) => [job, "waiting"]));
         const startCandidates = [];
         for (const job of [...new Set<Job>(potentialStarters)]) {
             if (job.started) continue;
