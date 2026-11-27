@@ -10,22 +10,34 @@ type CompositeKey = "success" | "warning" | "failed" | "skipped" | "manual" | "i
 
 export class Executor {
 
-    /** `manuals` lists the manual jobs that count as played (defaults to --manual). */
+    /**
+     * Runs every job that can start, up to --concurrency at once. Each time a job finishes, the jobs it unblocks
+     * start at once, as on GitLab: a job never waits for unrelated jobs that started alongside the ones it needs.
+     * `manuals` lists the manual jobs that count as played (defaults to --manual).
+     */
     static async runLoop (argv: Argv, jobs: ReadonlyArray<Job>, stages: readonly string[], potentialStarters: Job[], manuals: string[] = argv.manual): Promise<void> {
-        const queue = Executor.getStartCandidates(jobs, stages, potentialStarters, manuals);
-        if (queue.length === 0) return;
-
-        const startNext = async (): Promise<void> => {
-            const job = queue.shift();
-            if (!job) return;
-            await job.start().catch((e) => {
-                queue.length = 0;
-                throw e;
-            });
-            return startNext();
-        };
-        await Promise.all(Array.from({length: argv.concurrency ?? queue.length}, startNext));
-        return Executor.runLoop(argv, jobs, stages, potentialStarters, manuals);
+        const limit = argv.concurrency ?? Infinity;
+        // A trigger job counts as started only once it has done its work, so launched jobs are kept here too.
+        const launched = new Set<Job>();
+        const running = new Set<Promise<void>>();
+        let failure: {error: unknown} | null = null;
+        for (;;) {
+            for (const job of Executor.getStartCandidates(jobs, stages, potentialStarters, manuals)) {
+                if (running.size >= limit) break;
+                if (launched.has(job)) continue;
+                launched.add(job);
+                const run: Promise<void> = job.start()
+                    .catch((error: unknown) => {
+                        failure ??= {error};
+                    })
+                    .finally(() => running.delete(run));
+                running.add(run);
+            }
+            if (running.size === 0) return;
+            await Promise.race(running);
+            // As before, the first job that cannot run stops the pipeline; jobs already running carry on.
+            if (failure) throw (failure as {error: unknown}).error;
+        }
     }
 
     static getStartCandidates (jobs: ReadonlyArray<Job>, stages: readonly string[], potentialStarters: readonly Job[], manuals: string[]) {

@@ -1,0 +1,18 @@
+---
+# needs-next waits only for fast-job: it starts as soon as fast-job finishes, while slow-job, which started
+# alongside fast-job, is still running.
+slow-job:
+  needs: []
+  script:
+    - sleep 3
+    - echo "slow done"
+
+fast-job:
+  needs: []
+  script:
+    - echo "fast done"
+
+needs-next:
+  needs: [fast-job]
+  script:
+    - echo "next done"
