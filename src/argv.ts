@@ -1,5 +1,5 @@
 import assert from "node:assert";
-import {parseImageOs} from "./windows-container.js";
+import {parseImageOs, parseContainerHosts} from "./windows-container.js";
 import fs from "fs-extra";
 import * as dotenv from "dotenv";
 import * as path from "node:path";
@@ -216,6 +216,9 @@ export class Argv {
 
     /** Container OS per image, from --image-os image=os (see windows-container.ts). */
     get imageOs (): {[image: string]: string} { return parseImageOs(this.getStringArray("imageOs")); }
+
+    /** The engine for each container OS, from --container-host os=host (see windows-container.ts). */
+    get containerHosts (): {[os: string]: string} { return parseContainerHosts(this.getStringArray("containerHost")); }
 
     get network (): string[] { return this.getStringArray("network"); }
 

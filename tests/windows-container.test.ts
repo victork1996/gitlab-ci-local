@@ -3,7 +3,7 @@ import fs from "fs-extra";
 import os from "node:os";
 import path from "node:path";
 import {
-    POWERSHELL, UTF8_BOM, copyMatchesCommand, engineMismatch, isWindowsContainerJob, isWindowsImage, parseImageOs, powershellJobScript, psQuote, robocopyCommand, windowsProjectDir,
+    POWERSHELL, UTF8_BOM, containerCommand, copyMatchesCommand, engineMismatch, isWindowsContainerJob, isWindowsImage, parseContainerHosts, parseImageOs, powershellJobScript, psQuote, robocopyCommand, windowsProjectDir,
 } from "../src/windows-container.js";
 
 describe("Windows container jobs", () => {
@@ -32,6 +32,15 @@ describe("Windows container jobs", () => {
         expect(isWindowsContainerJob("mcr.microsoft.com/windows/servercore:ltsc2022", [], imageOs)).toBe(false);
         expect(isWindowsContainerJob("host:5000/app", ["windows"], imageOs)).toBe(true);
         expect(isWindowsContainerJob("other/image:1", [], imageOs)).toBe(false);
+    });
+
+    test("--container-host sends each container OS to its own engine", () => {
+        const hosts = parseContainerHosts(["linux=npipe:////./pipe/dockerDesktopLinuxEngine", "WINDOWS=npipe:////./pipe/docker_engine_windows", "bad", "mac="]);
+        expect(hosts).toEqual({linux: "npipe:////./pipe/dockerDesktopLinuxEngine", windows: "npipe:////./pipe/docker_engine_windows"});
+        expect(containerCommand("docker", hosts, true)).toEqual(["docker", "--host", "npipe:////./pipe/docker_engine_windows"]);
+        expect(containerCommand("docker", hosts, false)).toEqual(["docker", "--host", "npipe:////./pipe/dockerDesktopLinuxEngine"]);
+        expect(containerCommand("docker", {windows: "unix:///Case/Sensitive.sock"}, false)).toEqual(["docker"]);
+        expect(parseContainerHosts(["linux=unix:///Case/Sensitive.sock"]).linux).toBe("unix:///Case/Sensitive.sock");
     });
 
     test("tags mentioning windows select a Windows container, but only for jobs with an image", () => {

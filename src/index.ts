@@ -329,6 +329,11 @@ process.on("SIGUSR2", async () => {
             description: "Container OS of an image, as image=os (linux or windows), read from the image instead of guessed from its name",
             requiresArg: false,
         })
+        .option("container-host", {
+            type: "array",
+            description: "Engine for one container OS, as os=host (linux or windows; a docker --host address), so Linux and Windows container jobs run at once",
+            requiresArg: false,
+        })
         .option("volume", {
             type: "array",
             description: "Add volumes to docker executor",

@@ -128,11 +128,34 @@ export function copyMatchesCommand ({patterns, exclude = [], destination, projec
     return cmd;
 }
 
-let engineOs: Promise<string> | null = null;
-/** The OS of the containers the Docker engine runs ("linux" or "windows"), checked once per run. */
-export function containerEngineOs (containerExecutable: string): Promise<string> {
-    engineOs ??= Shell.spawn([containerExecutable, "info", "--format", "{{.OSType}}"]).then(({stdout}) => stdout.trim().toLowerCase()).catch(() => "");
-    return engineOs;
+/** Parses --container-host values ("os=host"): the engine each container OS runs on, whatever the default engine is. */
+export function parseContainerHosts (values: string[]): {[os: string]: string} {
+    const result: {[os: string]: string} = {};
+    for (const value of values) {
+        const at = value.indexOf("=");
+        if (at > 0 && at < value.length - 1) result[value.slice(0, at).toLowerCase()] = value.slice(at + 1);
+    }
+    return result;
+}
+
+/**
+ * The command line that reaches the engine for a job's containers: the executable alone, or with --host when
+ * --container-host names an engine for the job's OS (Docker Desktop runs its Linux and Windows engines side by side,
+ * each on its own endpoint, so a pipeline can use both at once).
+ */
+export function containerCommand (executable: string, hosts: {[os: string]: string}, windows: boolean): string[] {
+    const host = hosts[windows ? "windows" : "linux"];
+    return host ? [executable, "--host", host] : [executable];
+}
+
+const engineOs = new Map<string, Promise<string>>();
+/** The OS of the containers an engine runs ("linux" or "windows"), checked once per run and engine. */
+export function containerEngineOs (command: string[]): Promise<string> {
+    const key = command.join(" ");
+    if (!engineOs.has(key)) {
+        engineOs.set(key, Shell.spawn([...command, "info", "--format", "{{.OSType}}"]).then(({stdout}) => stdout.trim().toLowerCase()).catch(() => ""));
+    }
+    return engineOs.get(key)!;
 }
 
 export function engineMismatch (windowsJob: boolean, os: string): string | null {

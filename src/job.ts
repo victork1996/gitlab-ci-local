@@ -32,7 +32,7 @@ import * as os from "node:os";
 import {configAssert} from "./source-map.js";
 import {
     POWERSHELL, UTF8_BOM, WINDOWS_BUILDS_DIR, WINDOWS_COPY_IN_DIR, WINDOWS_COPY_OUT_DIR, WINDOWS_FILE_VARIABLES_DIR, WINDOWS_SCRIPTS_DIR,
-    containerEngineOs, copyMatchesCommand, engineMismatch, isWindowsContainerJob, powershellJobScript, psQuote, robocopyCommand, windowsProjectDir,
+    containerCommand, containerEngineOs, copyMatchesCommand, engineMismatch, isWindowsContainerJob, powershellJobScript, psQuote, robocopyCommand, windowsProjectDir,
 } from "./windows-container.js";
 
 const GCL_SHELL_PROMPT_PLACEHOLDER = "<gclShellPromptPlaceholder>";
@@ -713,6 +713,15 @@ If you know what you're doing and would like to suppress this warning, use one o
         return this.argv.workspaceMount !== "copy" && this.argv.umask;
     }
 
+    /** The command line that reaches the engine for this job's containers (--container-host, see windows-container.ts). */
+    get containerCommand (): string[] {
+        return containerCommand(this.argv.containerExecutable, this.argv.containerHosts, this.windowsContainer);
+    }
+
+    private get containerCommandLine (): string {
+        return this.containerCommand.join(" ");
+    }
+
     /** Whether the job runs in a Windows container (see windows-container.ts). */
     get windowsContainer (): boolean {
         const image = this.jobData["image"];
@@ -774,7 +783,7 @@ If you know what you're doing and would like to suppress this warning, use one o
 
         if (imageName) {
             // Docker runs either Linux or Windows containers; fail early with the reason, not on a pull error.
-            const mismatch = engineMismatch(this.windowsContainer, await containerEngineOs(this.argv.containerExecutable));
+            const mismatch = engineMismatch(this.windowsContainer, await containerEngineOs(this.containerCommand));
             if (mismatch) throw new AssertionError({message: chalk`${this.formattedJobName} ${mismatch}`});
         }
 
@@ -794,13 +803,13 @@ If you know what you're doing and would like to suppress this warning, use one o
             if (this.argv.workspaceMount !== "bind" || !this.argv.umask) {
                 this._containerVolumeNames.push(buildVolumeName, tmpVolumeName);
                 volumeCreatePromises.push(
-                    Shell.spawn([this.argv.containerExecutable, "volume", "create", `${buildVolumeName}`], argv.cwd),
-                    Shell.spawn([this.argv.containerExecutable, "volume", "create", `${tmpVolumeName}`], argv.cwd),
+                    Shell.spawn([...this.containerCommand, "volume", "create", `${buildVolumeName}`], argv.cwd),
+                    Shell.spawn([...this.containerCommand, "volume", "create", `${tmpVolumeName}`], argv.cwd),
                 );
             }
             if (this.argv.volume.some(v => v.startsWith("%gcl-cert%:"))) {
                 this._containerVolumeNames.push(this.certVolumeName);
-                volumeCreatePromises.push(Shell.spawn([this.argv.containerExecutable, "volume", "create", this.certVolumeName], argv.cwd));
+                volumeCreatePromises.push(Shell.spawn([...this.containerCommand, "volume", "create", this.certVolumeName], argv.cwd));
             }
             await Promise.all(volumeCreatePromises);
 
@@ -810,7 +819,7 @@ If you know what you're doing and would like to suppress this warning, use one o
             let chownOpt = "0:0";
             let chmodOpt = "a+rw";
             if (!this.argv.umask) {
-                const {stdout} = await Shell.spawn([this.argv.containerExecutable, "run", "--rm", "--entrypoint", "sh", imageName, "-c", "echo \"$(id -u):$(id -g)\""]);
+                const {stdout} = await Shell.spawn([...this.containerCommand, "run", "--rm", "--entrypoint", "sh", imageName, "-c", "echo \"$(id -u):$(id -g)\""]);
                 chownOpt = stdout;
                 if (chownOpt == "0:0") {
                     chmodOpt = "g-w";
@@ -845,7 +854,7 @@ If you know what you're doing and would like to suppress this warning, use one o
                     const serviceContainerId = await this.startService(writeStreams, expandVariables({...expanded, ...service.variables}), service);
                     const serviceContainerLogFile = `${argv.cwd}/${argv.stateDir}/services-output/${this.safeJobName}/${serviceName}-${serviceIndex}.log`;
                     await this.serviceHealthCheck(writeStreams, service, serviceIndex, serviceContainerLogFile);
-                    const {stdout, stderr} = await Shell.spawn([this.argv.containerExecutable, "logs", serviceContainerId]);
+                    const {stdout, stderr} = await Shell.spawn([...this.containerCommand, "logs", serviceContainerId]);
                     await fs.ensureFile(serviceContainerLogFile);
                     await fs.promises.writeFile(serviceContainerLogFile, `### stdout ###\n${stdout}\n### stderr ###\n${stderr}\n`);
                 }),
@@ -884,7 +893,7 @@ If you know what you're doing and would like to suppress this warning, use one o
         }
 
         const helperContainerArgs = [
-            this.argv.containerExecutable, "create", "--user=0:0",
+            ...this.containerCommand, "create", "--user=0:0",
             `--volume=${buildVolumeName}:${this.ciProjectDir}`,
             `--volume=${tmpVolumeName}:${this.fileVariablesDir}`,
         ];
@@ -901,12 +910,12 @@ If you know what you're doing and would like to suppress this warning, use one o
         const {stdout: containerId} = await Shell.spawn(helperContainerArgs, argv.cwd);
         this._containersToClean.push(containerId);
         if (await fs.pathExists(fileVariablesDir)) {
-            await Shell.spawn([this.argv.containerExecutable, "cp", `${fileVariablesDir}/.`, `${containerId}:${fileVariablesDir}`], argv.cwd);
+            await Shell.spawn([...this.containerCommand, "cp", `${fileVariablesDir}/.`, `${containerId}:${fileVariablesDir}`], argv.cwd);
             this.refreshLongRunningSilentTimeout(writeStreams);
         }
-        await Shell.spawn([this.argv.containerExecutable, "cp", `${argv.stateDir}/builds/.docker/.`, `${containerId}:${this.ciProjectDir}`], argv.cwd);
-        await Shell.spawn([this.argv.containerExecutable, "start", "--attach", containerId], argv.cwd);
-        await Shell.spawn([this.argv.containerExecutable, "rm", "-vf", containerId], argv.cwd);
+        await Shell.spawn([...this.containerCommand, "cp", `${argv.stateDir}/builds/.docker/.`, `${containerId}:${this.ciProjectDir}`], argv.cwd);
+        await Shell.spawn([...this.containerCommand, "start", "--attach", containerId], argv.cwd);
+        await Shell.spawn([...this.containerCommand, "rm", "-vf", containerId], argv.cwd);
     }
 
     // Windows containers have no Linux helper image: the job's own image (which has PowerShell, as
@@ -917,7 +926,7 @@ If you know what you're doing and would like to suppress this warning, use one o
         this.announceStep(this.checkoutStep);
         this._windowsImage = imageName;
         this._containerVolumeNames.push(this.buildVolumeName);
-        await Shell.spawn([argv.containerExecutable, "volume", "create", this.buildVolumeName], argv.cwd);
+        await Shell.spawn([...this.containerCommand, "volume", "create", this.buildVolumeName], argv.cwd);
         const time = process.hrtime();
         this.refreshLongRunningSilentTimeout(writeStreams);
         await this.copyInWindows(path.resolve(argv.cwd, argv.stateDir, "builds", ".docker"));
@@ -930,7 +939,7 @@ If you know what you're doing and would like to suppress this warning, use one o
     private copyInWindows (source: string) {
         assert(this._windowsImage, "the Windows job image is not known yet");
         return Shell.spawn([
-            this.argv.containerExecutable, "run", "--rm",
+            ...this.containerCommand, "run", "--rm",
             "--volume", `${this.buildVolumeName}:${this.ciProjectDir}`,
             "--volume", `${source}:${WINDOWS_COPY_IN_DIR}:ro`,
             this._windowsImage, ...POWERSHELL, "-Command", robocopyCommand(WINDOWS_COPY_IN_DIR, this.ciProjectDir),
@@ -948,7 +957,7 @@ If you know what you're doing and would like to suppress this warning, use one o
         await fs.outputFile(path.join(scriptsDir, scriptName), UTF8_BOM + script, "utf-8");
         this._filesToRm.push(path.join(scriptsDir, scriptName));
         await Shell.spawn([
-            this.argv.containerExecutable, "run", "--rm", ...extraArgs,
+            ...this.containerCommand, "run", "--rm", ...extraArgs,
             "--volume", `${this.buildVolumeName}:${this.ciProjectDir}`,
             "--volume", `${scriptsDir}:${WINDOWS_SCRIPTS_DIR}:ro`,
             "--volume", `${outDir}:${WINDOWS_COPY_OUT_DIR}`,
@@ -962,7 +971,7 @@ If you know what you're doing and would like to suppress this warning, use one o
         const argv = this.argv;
         this.announceStep(this.containerStep);
         const cwd = argv.cwd;
-        const args = [argv.containerExecutable, "create"];
+        const args = [...this.containerCommand, "create"];
         const imageUser = this.imageUser(expanded);
         if (imageUser) args.push("--user", imageUser);
         const imagePlatform = this.imagePlatform(expanded);
@@ -992,7 +1001,7 @@ If you know what you're doing and would like to suppress this warning, use one o
         args.push(imageName, ...(this.imageEntrypoint?.slice(1) ?? []), ...POWERSHELL, "-File", `${WINDOWS_SCRIPTS_DIR}\\${scriptName}`);
         const {stdout: containerId} = await Shell.spawn(args, cwd);
         const connectableNetworks = argv.network.filter((network) => !["host", "none"].includes(network));
-        await Promise.all(connectableNetworks.map((network) => Shell.spawn([argv.containerExecutable, "network", "connect", network, containerId])));
+        await Promise.all(connectableNetworks.map((network) => Shell.spawn([...this.containerCommand, "network", "connect", network, containerId])));
         this._containerId = containerId;
         this._containersToClean.push(containerId);
     }
@@ -1012,7 +1021,7 @@ If you know what you're doing and would like to suppress this warning, use one o
     private async _doCleanupResources () {
         if (this._containersToClean.length > 0) {
             try {
-                await Shell.spawn([this.argv.containerExecutable, "rm", "-vf", ...this._containersToClean]);
+                await Shell.spawn([...this.containerCommand, "rm", "-vf", ...this._containersToClean]);
             } catch (e) {
                 assert(e instanceof Error, "e is not instanceof Error");
             }
@@ -1020,7 +1029,7 @@ If you know what you're doing and would like to suppress this warning, use one o
 
         if (this._serviceNetworkId) {
             try {
-                await Shell.spawn([this.argv.containerExecutable, "network", "rm", `${this._serviceNetworkId}`]);
+                await Shell.spawn([...this.containerCommand, "network", "rm", `${this._serviceNetworkId}`]);
             } catch (e) {
                 assert(e instanceof Error, "e is not instanceof Error");
             }
@@ -1028,7 +1037,7 @@ If you know what you're doing and would like to suppress this warning, use one o
 
         if (this._containerVolumeNames.length > 0) {
             try {
-                await Shell.spawn([this.argv.containerExecutable, "volume", "rm", ...this._containerVolumeNames]);
+                await Shell.spawn([...this.containerCommand, "volume", "rm", ...this._containerVolumeNames]);
             } catch (e) {
                 assert(e instanceof Error, "e is not instanceof Error");
             }
@@ -1174,7 +1183,7 @@ If you know what you're doing and would like to suppress this warning, use one o
 
         if (imageName && !this._containerId) {
             this.announceStep(this.containerStep);
-            let dockerCmd = `${this.argv.containerExecutable} create --interactive ${this.generateInjectSSHAgentOptions()} `;
+            let dockerCmd = `${this.containerCommandLine} create --interactive ${this.generateInjectSSHAgentOptions()} `;
             if (this.argv.privileged) {
                 dockerCmd += "--privileged ";
             }
@@ -1329,7 +1338,7 @@ If you know what you're doing and would like to suppress this warning, use one o
 
             // Special network names that do not work with `docker network connect`
             const connectableNetworks = this.argv.network.filter((network) => !["host", "none"].includes(network));
-            await Promise.all(connectableNetworks.map((network) => Shell.spawn([this.argv.containerExecutable, "network", "connect", network, `${containerId}`])));
+            await Promise.all(connectableNetworks.map((network) => Shell.spawn([...this.containerCommand, "network", "connect", network, `${containerId}`])));
 
             this._containerId = containerId;
             this._containersToClean.push(this._containerId);
@@ -1372,10 +1381,10 @@ If you know what you're doing and would like to suppress this warning, use one o
         this._filesToRm.push(jobScriptFile);
 
         if (imageName && !windows) {
-            await Shell.spawn([this.argv.containerExecutable, "cp", `${stateDir}/scripts/${safeJobName}_${this.jobId}`, `${this._containerId}:/gcl-cmd`], cwd);
+            await Shell.spawn([...this.containerCommand, "cp", `${stateDir}/scripts/${safeJobName}_${this.jobId}`, `${this._containerId}:/gcl-cmd`], cwd);
         }
 
-        const startCommand = windows ? `${this.argv.containerExecutable} start --attach ${this._containerId}` : `${this.argv.containerExecutable} start --attach -i ${this._containerId}`;
+        const startCommand = windows ? `${this.containerCommandLine} start --attach ${this._containerId}` : `${this.containerCommandLine} start --attach -i ${this._containerId}`;
         const cp = execa(this._containerId ? startCommand : "bash", {
             cwd,
             shell: "bash",
@@ -1520,7 +1529,7 @@ If you know what you're doing and would like to suppress this warning, use one o
             return;
         }
         try {
-            await Shell.spawn([this.argv.containerExecutable, "login", CI_DEPENDENCY_PROXY_SERVER]);
+            await Shell.spawn([...this.containerCommand, "login", CI_DEPENDENCY_PROXY_SERVER]);
         } catch (e: any) {
             const errMsg = `Please authenticate to the Dependency Proxy (${CI_DEPENDENCY_PROXY_SERVER}) https://docs.gitlab.com/ee/user/packages/dependency_proxy/#authenticate-with-the-dependency-proxy`;
             if (this.argv.containerExecutable == "docker") {
@@ -1540,7 +1549,7 @@ If you know what you're doing and would like to suppress this warning, use one o
             await this.validateCiDependencyProxyServerAuthentication(imageToPull);
             this.announceStep(`pulling ${imageToPull}`);
             const time = process.hrtime();
-            await Shell.spawn([this.argv.containerExecutable, "pull", imageToPull, ...platformArgs]);
+            await Shell.spawn([...this.containerCommand, "pull", imageToPull, ...platformArgs]);
             const endTime = process.hrtime(time);
             writeStreams.stdout(chalk`${this.formattedJobName} {magentaBright pulled} ${imageToPull}${platformSuffix} in {magenta ${prettyHrtime(endTime)}}\n`);
             this.refreshLongRunningSilentTimeout(writeStreams);
@@ -1561,7 +1570,7 @@ If you know what you're doing and would like to suppress this warning, use one o
             return;
         }
         try {
-            await Shell.spawn([this.argv.containerExecutable, "image", "inspect", imageToPull]);
+            await Shell.spawn([...this.containerCommand, "image", "inspect", imageToPull]);
         } catch {
             await actualPull();
         }
@@ -1670,7 +1679,7 @@ If you know what you're doing and would like to suppress this warning, use one o
             const relativeSource = path.relative(this.argv.cwd, source).split(path.sep).join("/");
             return Shell.spawn(["rsync", "-a", `${relativeSource}/.`, `${this.argv.stateDir}/builds/${safeJobName}`], this.argv.cwd);
         }
-        return Shell.spawn([this.argv.containerExecutable, "cp", `${source}/.`, `${this._containerId}:${this.ciProjectDir}`]);
+        return Shell.spawn([...this.containerCommand, "cp", `${source}/.`, `${this._containerId}:${this.ciProjectDir}`]);
     }
 
     private async copyCacheOut (writeStreams: WriteStreams, expanded: {[key: string]: string}) {
@@ -1846,10 +1855,10 @@ If you know what you're doing and would like to suppress this warning, use one o
             const cmdWithWritablePerms = `${cmd}\nchmod -R u+w /${type} 2>/dev/null || true`;
             // eslint-disable-next-line @stylistic/quotes
             const escapedCmd = cmdWithWritablePerms.replaceAll('"', String.raw`\"`);
-            const {stdout: containerId} = await Shell.bash(`${this.argv.containerExecutable} create -i ${dockerCmdExtras.join(" ")} -v ${buildVolumeName}:${this.ciProjectDir} -w ${this.ciProjectDir} ${helperImageName} bash -c "${escapedCmd}"`, cwd);
+            const {stdout: containerId} = await Shell.bash(`${this.containerCommandLine} create -i ${dockerCmdExtras.join(" ")} -v ${buildVolumeName}:${this.ciProjectDir} -w ${this.ciProjectDir} ${helperImageName} bash -c "${escapedCmd}"`, cwd);
             this._containersToClean.push(containerId);
-            await Shell.spawn([this.argv.containerExecutable, "start", containerId, "--attach"]);
-            await Shell.spawn([this.argv.containerExecutable, "cp", `${containerId}:/${type}/.`, `${stateDir}/${type}/.`], cwd);
+            await Shell.spawn([...this.containerCommand, "start", containerId, "--attach"]);
+            await Shell.spawn([...this.containerCommand, "cp", `${containerId}:/${type}/.`, `${stateDir}/${type}/.`], cwd);
         } else if (this.argv.shellIsolation) {
             await Shell.bash(`bash -eo pipefail -c "${cmd}"`, `${cwd}/${stateDir}/builds/${safeJobName}`);
         } else if (!this.argv.shellIsolation) {
@@ -1902,14 +1911,14 @@ If you know what you're doing and would like to suppress this warning, use one o
     }
 
     private async createDockerNetwork (networkName: string) {
-        const {stdout: networkId} = await Shell.spawn([this.argv.containerExecutable, "network", "create", `${networkName}`]);
+        const {stdout: networkId} = await Shell.spawn([...this.containerCommand, "network", "create", `${networkName}`]);
         this._serviceNetworkId = networkId;
     }
 
     private async startService (writeStreams: WriteStreams, expanded: {[key: string]: string}, service: Service) {
         this.announceStep(`starting service ${service.name}`);
         const cwd = this.argv.cwd;
-        let dockerCmd = `${this.argv.containerExecutable} create --interactive `;
+        let dockerCmd = `${this.containerCommandLine} create --interactive `;
         this.refreshLongRunningSilentTimeout(writeStreams);
 
         if (this.argv.userns != undefined) {
@@ -2010,13 +2019,13 @@ If you know what you're doing and would like to suppress this warning, use one o
         const {stdout: containerId} = await Shell.bash(dockerCmd, cwd);
         this._containersToClean.push(containerId);
 
-        await Promise.all(this.argv.network.map((network) => Shell.spawn([this.argv.containerExecutable, "network", "connect", network, `${containerId}`])));
+        await Promise.all(this.argv.network.map((network) => Shell.spawn([...this.containerCommand, "network", "connect", network, `${containerId}`])));
 
         if (this.argv.registry) {
-            await Shell.spawn([this.argv.containerExecutable, "network", "connect", `${gclRegistryPrefix}.net`, `${containerId}`]);
+            await Shell.spawn([...this.containerCommand, "network", "connect", `${gclRegistryPrefix}.net`, `${containerId}`]);
         }
 
-        await Shell.spawn([this.argv.containerExecutable, "start", `${containerId}`]);
+        await Shell.spawn([...this.containerCommand, "start", `${containerId}`]);
 
         const endTime = process.hrtime(time);
         writeStreams.stdout(chalk`${this.formattedJobName} {magentaBright started service image: ${serviceName} with aliases: ${Array.from(aliases).join(", ")}} in {magenta ${prettyHrtime(endTime)}}\n`);
@@ -2035,7 +2044,7 @@ If you know what you're doing and would like to suppress this warning, use one o
             return writeStreams.stdout(chalk`${this.formattedJobName} {yellow service image: ${serviceName} healthcheck skipped for Windows containers}\n`);
         }
 
-        const {stdout} = await Shell.spawn([this.argv.containerExecutable, "image", "inspect", serviceName]);
+        const {stdout} = await Shell.spawn([...this.containerCommand, "image", "inspect", serviceName]);
         const imageInspect = JSON.parse(stdout);
 
         if ((imageInspect[0]?.Config?.ExposedPorts ?? null) === null) {
@@ -2050,7 +2059,7 @@ If you know what you're doing and would like to suppress this warning, use one o
                 .map((port) => {
                     const portNum = Number.parseInt(port.replace("/tcp", ""));
                     const containerName = `gcl-wait-for-it-${this.jobId}-${serviceIndex}-${portNum}`;
-                    const spawnCmd = [this.argv.containerExecutable, "run", "--rm", `--name=${containerName}`, "--network", `${this._serviceNetworkId}`, `${waitImageName}`, `${serviceAlias}:${portNum}`, "-t", `${waitForServicesTimeout}`];
+                    const spawnCmd = [...this.containerCommand, "run", "--rm", `--name=${containerName}`, "--network", `${this._serviceNetworkId}`, `${waitImageName}`, `${serviceAlias}:${portNum}`, "-t", `${waitForServicesTimeout}`];
                     this._containersToClean.push(containerName);
                     return Shell.spawn(spawnCmd);
                 }));
@@ -2071,7 +2080,7 @@ If you know what you're doing and would like to suppress this warning, use one o
                 .filter((port) => port.endsWith("/tcp"))
                 .map((port) => {
                     const portNum = Number.parseInt(port.replace("/tcp", ""));
-                    return Shell.spawn([this.argv.containerExecutable, "rm", "-vf", `gcl-wait-for-it-${this.jobId}-${serviceIndex}-${portNum}`]);
+                    return Shell.spawn([...this.containerCommand, "rm", "-vf", `gcl-wait-for-it-${this.jobId}-${serviceIndex}-${portNum}`]);
                 }));
         }
     }
